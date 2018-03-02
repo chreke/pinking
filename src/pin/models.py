@@ -10,5 +10,9 @@ class Pin(models.Model):
     cumulative_size = models.PositiveIntegerField(
         help_text='Total size of object and its references in bytes'
     )
-    multihash = models.CharField(max_length=64, unique=True)
+    multihash = models.CharField(
+        max_length=64,
+        db_index=True,
+        help_text='The multihash of the IPFS object to pin',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
