@@ -1,3 +1,8 @@
-from django.shortcuts import render
+from rest_framework import viewsets
+from .serializers import PinSerializer
+from .models import Pin
 
-# Create your views here.
+
+class PinViewSet(viewsets.ModelViewSet):
+    queryset = Pin.objects.all()
+    serializer_class = PinSerializer
