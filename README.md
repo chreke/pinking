@@ -8,6 +8,9 @@ Installation:
 
     pip install -r requirements.txt
 
+*Please note*: Using a [virtual environment][venv] is optional but
+highly recommended!
+
 # Usage
 
 Set up Django project:
@@ -23,3 +26,7 @@ At the moment there's no signup process, so you'll have to create
 a superuser if you want to log in:
 
    ./manage.py createsuperuser
+
+Now you should be able to log in and create "pins".
+
+[venv]: https://docs.python.org/3/tutorial/venv.html
