@@ -25,7 +25,7 @@ You should now be able to start the server with
 At the moment there's no signup process, so you'll have to create
 a superuser if you want to log in:
 
-   ./manage.py createsuperuser
+    ./manage.py createsuperuser
 
 Now you should be able to log in and create "pins".
 
