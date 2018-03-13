@@ -14,8 +14,10 @@ class PinViewSet(
         mixins.RetrieveModelMixin,
         viewsets.GenericViewSet
 ):
-    queryset = Pin.objects.all()
     serializer_class = PinSerializer
+
+    def get_queryset(self):
+        return Pin.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
         obj_size = serializer.validated_data['cumulative_size']
