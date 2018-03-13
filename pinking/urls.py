@@ -20,7 +20,7 @@ from rest_framework import routers
 from pin import views
 
 router = routers.DefaultRouter()
-router.register('pins', views.PinViewSet)
+router.register('pins', views.PinViewSet, base_name='pin')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
