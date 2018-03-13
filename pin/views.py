@@ -1,7 +1,10 @@
-from rest_framework import mixins, viewsets
-from .serializers import PinSerializer
+from django.db import transaction
+from rest_framework import mixins, viewsets, serializers
+from .serializers import PinSerializer, UserSerializer
 from .models import Pin
-from .ipfs import MockIPFS
+
+
+SPACE_PER_USER = 200 * 1024 * 1024  # 200 Megabytes
 
 
 class PinViewSet(
@@ -15,9 +18,12 @@ class PinViewSet(
     serializer_class = PinSerializer
 
     def perform_create(self, serializer):
-        ipfs = MockIPFS('0.0.0.0')
-        multihash = serializer.validated_data['multihash']
-        serializer.save(
-            user=self.request.user,
-            cumulative_size=ipfs.get_cumulative_size(multihash),
-        )
+        obj_size = serializer.validated_data['cumulative_size']
+        with transaction.atomic():
+            space_used = self._space_used(self.request.user)
+            if obj_size + space_used < SPACE_PER_USER:
+                serializer.save(user=self.request.user)
+            else:
+                raise serializers.ValidationError(
+                    'Not enough free space to pin object'
+                )
