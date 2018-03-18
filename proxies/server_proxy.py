@@ -38,8 +38,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Set up logging
-    logging.basicConfig(
-        format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=args.loglvl)
+    logging.basicConfig(format='%(asctime)s %(message)s',
+                        datefmt='%m/%d/%Y %I:%M:%S %p',
+                        level=args.loglvl,
+                        filename=args.logfile)
 
     if args.ssl_cert_path is not None and not os.path.exists(args.ssl_cert_path):
         print(f'SSL cert path {ssl_cert_path} doesn\'t exist')
