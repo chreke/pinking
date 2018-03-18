@@ -1,14 +1,21 @@
 import argparse
 import logging
+import getpass
+from aiohttp import web
+from aiohttp.helpers import BasicAuth
 from functools import partial
-from proxy import ipfs_proxy_handler, run_proxy
+from proxy import ipfs_proxy_handler
 
 
-async def _proxy_handler(request, target_url):
+async def _proxy_handler(request, target_url, auth):
     """
     Intercept calls to ipfs and add auth header
     """
-    return await ipfs_proxy_handler(request, target_url)
+    return await ipfs_proxy_handler(request, target_url, auth=auth)
+
+
+async def _cleanup():
+    pass
 
 
 if __name__ == '__main__':
@@ -24,7 +31,17 @@ if __name__ == '__main__':
     parser.add_argument("--logfile", help="the optional output log file", type=str)
     parser.add_argument("--loglvl", help="the log level",
                         type=str, choices=list(lvl_map.keys()), default='INFO')
+    parser.add_argument("-u", "--username", help="Username", type=str)
+    parser.add_argument("-p", "--password", help="Password", type=str)
     args = parser.parse_args()
+
+    username = args.username
+    if username is None:
+        username = input("Username: ")
+
+    password = args.password
+    if password is None:
+        password = getpass.getpass()
 
     # Set up logging
     logging.basicConfig(format='%(asctime)s %(message)s',
@@ -32,4 +49,13 @@ if __name__ == '__main__':
                         level=args.loglvl,
                         filename=args.logfile)
 
-    run_proxy(partial(_proxy_handler, target_url=args.target_url), args.listen_port)
+
+    app = web.Application()
+    basic_auth = BasicAuth(username, password)
+    proxy_handler = partial(_proxy_handler, target_url=args.target_url,
+                            auth=basic_auth)
+    app.router.add_route('*', '/{path:.*?}', proxy_handler)
+    try:
+        web.run_app(app, host='0.0.0.0', port=args.listen_port)
+    except KeyboardInterrupt:
+        asyncio.get_event_loop().run_until_complete(_cleanup())

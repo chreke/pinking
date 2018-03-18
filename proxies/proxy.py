@@ -16,7 +16,7 @@ async def _request_data_streamer(writer, request):
         chunk = await request.content.read(CHUNK_SIZE)
 
 
-async def ipfs_proxy_handler(request, target_url):
+async def ipfs_proxy_handler(request, target_url, query=None, auth=None):
     """
     Proxy handler for requests to ipfs daemon.
     Streams the content if encoding is chunked (e.g. ipfs add), passing it on
@@ -25,14 +25,13 @@ async def ipfs_proxy_handler(request, target_url):
 
     Set the proxy target url using `partial` in functools
     """
-    target_url = urljoin(target_url, str(request.rel_url))
+    target_url = urljoin(target_url, request.rel_url.path)
     headers = request.headers
-    get_data = request.rel_url.query
+    if query is None:
+        query = request.rel_url.query
     method = request.method
 
-    logging.info(f'Received {method} request')
-
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(auth=auth) as session:
         if headers.get('Transfer-Encoding', None) == 'chunked':
             data = _request_data_streamer(request)
             # For some reason, can't have 'Transfer-Encoding' set if
@@ -41,9 +40,8 @@ async def ipfs_proxy_handler(request, target_url):
         else:
             data = await request.read()
 
-        async with session.request(method, target_url,
-                                   headers=headers, params=get_data,
-                                   data=data) as ipfs_response:
+        async with session.request(method, target_url, params=query,
+                                   headers=headers, data=data) as ipfs_response:
             if ipfs_response.headers.get('Content-Length', None) is not None:
                 proxy_response = web.Response(status=ipfs_response.status,
                                               headers=ipfs_response.headers,
@@ -60,13 +58,3 @@ async def ipfs_proxy_handler(request, target_url):
                 await proxy_response.write_eof()
 
     return proxy_response
-
-
-def run_proxy(proxy_handler, listen_port=5001, ssl_context=None):
-    app = web.Application()
-    app.router.add_route('*', '/{path:.*?}', proxy_handler)
-    try:
-        web.run_app(app, host='0.0.0.0', ssl_context=ssl_context,
-                    port=listen_port)
-    except KeyboardInterrupt:
-        asyncio.get_event_loop().run_until_complete(cleanup())
