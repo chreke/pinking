@@ -1,5 +1,5 @@
-from django.conf import settings
 from django.db import transaction
+from django.contrib.auth import get_user_model
 from django.db.models import F
 from rest_framework import mixins, viewsets, serializers, status
 from rest_framework.response import Response
@@ -11,11 +11,15 @@ from . import pins
 SPACE_PER_USER = 200 * 1024 * 1024  # 200 Megabytes
 
 
-class MeView(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+class MeView(
+        mixins.RetrieveModelMixin,
+        mixins.ListModelMixin,
+        viewsets.GenericViewSet
+):
     serializer_class = UserSerializer
 
     def get_queryset(self):
-        return settings.AUTH_USER_MODEL.objects.filter(pk=self.request.user.pk)
+        return get_user_model().objects.filter(pk=self.request.user.pk)
 
 
 class PinViewSet(

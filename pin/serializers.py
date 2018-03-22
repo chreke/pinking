@@ -1,4 +1,4 @@
-from django.conf import settings
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from .models import Pin
 from . import pins
@@ -25,9 +25,12 @@ class DeletePinSerializer(serializers.Serializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
-    class Meta:
-        settings.AUTH_USER_MODEL
-        read_only_fields = ('username', 'email', 'space_used',)
+    space_used = serializers.SerializerMethodField()
 
-    def get_space_used(user):
+    class Meta:
+        model = get_user_model()
+        read_only_fields = ('username', 'email')
+        fields = ('username', 'email', 'space_used')
+
+    def get_space_used(self, user):
         return pins.space_used(user)
