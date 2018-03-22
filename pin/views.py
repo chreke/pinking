@@ -1,8 +1,10 @@
 from django.conf import settings
 from django.db import transaction
-from rest_framework import mixins, viewsets, serializers
+from rest_framework import mixins, viewsets, serializers, status
+from rest_framework.response import Response
 from .serializers import PinSerializer, UserSerializer
 from .models import Pin
+from . import pins
 
 
 SPACE_PER_USER = 200 * 1024 * 1024  # 200 Megabytes
@@ -27,13 +29,32 @@ class PinViewSet(
     def get_queryset(self):
         return Pin.objects.filter(user=self.request.user)
 
-    def perform_create(self, serializer):
-        obj_size = serializer.validated_data['cumulative_size']
+    def create(self, request):
+        serializer = self.serializer_class(
+            data=request.data,
+            context={'request': request},
+            many=True,
+            allow_empty=False,
+        )
+        serializer.is_valid(raise_exception=True)
+        created_pins = []
         with transaction.atomic():
-            space_used = self._space_used(self.request.user)
-            if obj_size + space_used < SPACE_PER_USER:
-                serializer.save(user=self.request.user)
-            else:
-                raise serializers.ValidationError(
-                    'Not enough free space to pin object'
+            for pin_data in serializer.validated_data:
+                pin, created = Pin.objects.get_or_create(
+                    user=request.user,
+                    pin_type=pin_data['pin_type'],
+                    multihash=pin_data['multihash'],
+                    defaults={'block_size': pin_data['block_size']},
                 )
+                if not created:
+                    pin.count += 1
+                    pin.save()
+                created_pins.append(pin)
+            if pins.space_used(request.user) > SPACE_PER_USER:
+                raise serializers.ValidationError('Not enough space!')
+        serialized = self.serializer_class(
+            created_pins,
+            many=True,
+            context={'request': request}
+        )
+        return Response(serialized.data, status=status.HTTP_201_CREATED)
