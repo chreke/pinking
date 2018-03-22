@@ -2,6 +2,8 @@ import os
 import base64
 import logging
 import argparse
+import aiohttp
+import json
 from functools import partial
 from pathlib import Path
 from aiohttp import web
@@ -18,8 +20,13 @@ def _get_user_password(request):
 
 
 async def _authenticate(request):
+    #
     # Check with Django
+    #
+
     user, pwd = _get_user_password(request)
+    if user is None or pwd is None:
+        return web.Response(status=401)
     logging.info(f'Authenticating with {user} {pwd}')
     return None
 
@@ -56,6 +63,69 @@ async def _auth_handler(request, target_url):
         return auth_response
 
     return await ipfs_proxy_handler(request, target_url)
+
+
+async def _traverse_hashes(ipfs_hash, ipfs_url):
+    # Get the block size of the hash
+    collect_hashes = []
+    stat_url = f'{ipfs_url}/api/v0/object/stat'
+    async with aiohttp.ClientSession() as session:
+        async with session.request('POST', stat_url, params={'arg': ipfs_hash}) as resp:
+            if resp.status != 200:
+                raise ValueError()
+            block_size = json.loads(await resp.text())['BlockSize']
+            collect_hashes.append((ipfs_hash, block_size))
+
+    # Recusively traverse children
+    links_url = f'{ipfs_url}/api/v0/object/links'
+    async with aiohttp.ClientSession() as session:
+        async with session.request('POST', links_url, params={'arg': ipfs_hash}) as resp:
+            if resp.status != 200:
+                raise ValueError()
+            links = json.loads(await resp.text()).get('Links', None) or []
+            for link in links:
+                collect_hashes += await _traverse_hashes(link['Hash'], ipfs_url)
+
+    return collect_hashes
+
+
+async def _pin_ls_handler(request, target_url):
+    pass
+
+
+async def _pin_add_handler(request, target_url):
+    auth_response = await _authenticate(request)
+    if auth_response is not None:
+        return auth_response
+
+    ipfs_hash = request.rel_url.query.get('arg', None)
+    if ipfs_hash is None:
+        return web.Response(status=400)
+
+    try:
+        hashes = await _traverse_hashes(ipfs_hash, target_url)
+    except:
+        return web.Response(status=400)
+
+    logging.info(hashes)
+
+    #
+    # Check with django here
+    #
+
+    return await ipfs_proxy_handler(request, target_url)
+
+
+async def _pin_rm_handler(request, target_url):
+    pass
+
+
+async def _pin_update_handler(request, target_url):
+    pass
+
+
+async def _pin_verify_handler(request, target_url):
+    pass
 
 
 async def _cleanup():
@@ -108,32 +178,50 @@ if __name__ == "__main__":
     target_url = f'http://127.0.0.1:{args.target_port}'
     app = web.Application()
 
-    # ----------
-    # auth only
-    # ----------
+    routes = []
+    # -----------------------------
+    # Commands requiring auth only
+    # -----------------------------
     auth_handler = partial(_auth_handler, target_url=target_url)
-    auth_commands = ['add', 'cat', 'get', 'ls', 'refs']
-    for command in auth_commands:
-        app.router.add_route('POST', f'/api/v0/{command}', auth_handler)
+    auth_commands = ['add', 'cat', 'get', 'ls', 'refs', 'object/data',
+                     'object/diff', 'object/get', 'object/links', 'object/new',
+                     'object/patch/add-link', 'object/patch/append-data',
+                     'object/patch/rm-link', 'object/patch/set-data',
+                     'object/put', 'object/stat', 'version', 'tar/add',
+                     'tar/cat']
+    routes.append((auth_commands, auth_handler))
 
     # ----------
     # ipfs files
     # ----------
     files_handler = partial(_files_handler, target_url=target_url)
-    files_subcommands = ['chcid', 'cp', 'flush', 'ls', 'mkdir', 'mv', 'read',
+    files_commands = ['chcid', 'cp', 'flush', 'ls', 'mkdir', 'mv', 'read',
                          'rm', 'stat', 'write']
-    for subcommand in files_subcommands:
-        app.router.add_route('POST', f'/api/v0/files/{subcommand}', files_handler)
+    files_commands = [f'files/{command}' for command in files_commands]
+    routes.append((files_commands, files_handler))
 
+    # ---------
+    # ipfs key
+    # ---------
+    '''
+    key_handler = partial(_key_handler, target_url=target_url)
+    routes.append(['key/gen'], _key_gen_handler)
+    routes.append(['key/list'], _key_list_handler)
+    routes.append(['key/rename'], _key_rename_handler)
+    routes.append(['key/rm'], _key_rm_handler)
+    '''
 
     # ---------
     # ipfs pin
     # ---------
-    #pin_handler = partial(_files_handler, target_url=target_url)
-    #pin_subcommands = ['chcid', 'cp', 'flush', 'ls', 'mkdir', 'mv', 'read',
-                         #'rm', 'stat', 'write']
-    #for subcommand in files_subcommands:
-        #app.router.add_route('POST', f'/api/v0/files/{subcommand}', files_handler)
+    routes.append((['pin/ls'], partial(_pin_ls_handler, target_url=target_url)))
+    routes.append((['pin/add'], partial(_pin_add_handler, target_url=target_url)))
+    routes.append((['pin/rm'], partial(_pin_rm_handler, target_url=target_url)))
+    routes.append((['pin/update'], partial(_pin_update_handler, target_url=target_url)))
+    routes.append((['pin/verify'], partial(_pin_verify_handler, target_url=target_url)))
+    for paths, handler in routes:
+        for path in paths:
+            app.router.add_route('POST', f'/api/v0/{path}', handler)
 
     try:
         web.run_app(app, host='0.0.0.0', ssl_context=ssl_context, port=args.listen_port)
