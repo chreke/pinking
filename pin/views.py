@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import transaction
 from rest_framework import mixins, viewsets, serializers
 from .serializers import PinSerializer, UserSerializer
@@ -5,6 +6,13 @@ from .models import Pin
 
 
 SPACE_PER_USER = 200 * 1024 * 1024  # 200 Megabytes
+
+
+class MeView(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    serializer_class = UserSerializer
+
+    def get_queryset(self):
+        return settings.AUTH_USER_MODEL.objects.filter(pk=self.request.user.pk)
 
 
 class PinViewSet(
