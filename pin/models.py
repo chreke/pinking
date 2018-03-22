@@ -27,3 +27,6 @@ class Pin(models.Model):
     )
     count = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.multihash
