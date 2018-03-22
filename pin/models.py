@@ -7,9 +7,6 @@ class Pin(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
     )
-    cumulative_size = models.PositiveIntegerField(
-        help_text='Total size of object and its references in bytes'
-    )
     multihash = models.CharField(
         max_length=64,
         db_index=True,
