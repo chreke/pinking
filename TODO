@@ -1,0 +1,5 @@
+ * View used space
+ * Use keychain helper to get SUDO password
+ * Change production secret (get from env)
+ * Use database URL
+ * Allow POST:ing multiple objects
