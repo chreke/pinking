@@ -5,10 +5,18 @@ from . import pins
 
 
 class PinSerializer(serializers.HyperlinkedModelSerializer):
+
     class Meta:
         model = Pin
-        read_only_fields = ('created_at',)
-        fields = ('created_at', 'cumulative_size', 'multihash', 'url')
+        read_only_fields = ('count', 'created_at',)
+        fields = (
+            'block_size',
+            'count',
+            'created_at',
+            'multihash',
+            'pin_type',
+            'url',
+        )
 
 
 class UserSerializer(serializers.ModelSerializer):
