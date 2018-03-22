@@ -19,6 +19,11 @@ class PinSerializer(serializers.HyperlinkedModelSerializer):
         )
 
 
+class DeletePinSerializer(serializers.Serializer):
+    multihash = serializers.CharField(max_length=64)
+    pin_type = serializers.ChoiceField(choices=Pin.PIN_TYPE_CHOICES)
+
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         settings.AUTH_USER_MODEL

@@ -1,8 +1,9 @@
 from django.conf import settings
 from django.db import transaction
+from django.db.models import F
 from rest_framework import mixins, viewsets, serializers, status
 from rest_framework.response import Response
-from .serializers import PinSerializer, UserSerializer
+from .serializers import PinSerializer, UserSerializer, DeletePinSerializer
 from .models import Pin
 from . import pins
 
@@ -19,7 +20,6 @@ class MeView(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
 
 class PinViewSet(
         mixins.CreateModelMixin,
-        mixins.DestroyModelMixin,
         mixins.ListModelMixin,
         mixins.RetrieveModelMixin,
         viewsets.GenericViewSet
@@ -58,3 +58,26 @@ class PinViewSet(
             context={'request': request}
         )
         return Response(serialized.data, status=status.HTTP_201_CREATED)
+
+
+class DeletePinViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
+    serializer_class = DeletePinSerializer
+
+    def create(self, request):
+        serializer = self.serializer_class(
+            data=request.data,
+            context={'request': request},
+            many=True,
+            allow_empty=False,
+        )
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            for pin_data in serializer.validated_data:
+                Pin.objects\
+                    .filter(
+                        user=request.user,
+                        pin_type=pin_data['pin_type'],
+                        multihash=pin_data['multihash'],
+                    )\
+                    .update(count=F('count') - 1)
+        return Response('', status=status.HTTP_201_CREATED)
