@@ -31,7 +31,7 @@ class PinViewSet(
     serializer_class = PinSerializer
 
     def get_queryset(self):
-        return Pin.objects.filter(user=self.request.user)
+        return Pin.objects.filter(user=self.request.user, count__gt=0)
 
     def create(self, request):
         serializer = self.serializer_class(
