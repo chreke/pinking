@@ -43,18 +43,21 @@ async def ipfs_proxy_handler(request, target_url, query=None, auth=None):
         async with session.request(method, target_url, params=query,
                                    headers=headers, data=data) as ipfs_response:
             if ipfs_response.headers.get('Content-Length', None) is not None:
+                body = await ipfs_response.read()
                 proxy_response = web.Response(status=ipfs_response.status,
                                               headers=ipfs_response.headers,
-                                              body=await ipfs_response.read())
+                                              body=body)
             else:
                 proxy_response = StreamResponse(status=ipfs_response.status,
                                                 headers=ipfs_response.headers)
                 proxy_response.enable_chunked_encoding()
                 await proxy_response.prepare(request)
                 chunk = await ipfs_response.content.read(CHUNK_SIZE)
+                body = chunk
                 while chunk:
                     await proxy_response.write(chunk)
+                    body += chunk
                     chunk = await ipfs_response.content.read(CHUNK_SIZE)
                 await proxy_response.write_eof()
 
-    return proxy_response
+    return proxy_response, body

@@ -11,7 +11,8 @@ async def _proxy_handler(request, target_url, auth):
     """
     Intercept calls to ipfs and add auth header
     """
-    return await ipfs_proxy_handler(request, target_url, auth=auth)
+    response, _ = await ipfs_proxy_handler(request, target_url, auth=auth)
+    return response
 
 
 async def _cleanup():
@@ -44,7 +45,7 @@ if __name__ == '__main__':
         password = getpass.getpass()
 
     # Set up logging
-    logging.basicConfig(format='%(asctime)s %(message)s',
+    logging.basicConfig(format='local proxy: %(asctime)s %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p',
                         level=args.loglvl,
                         filename=args.logfile)

@@ -4,6 +4,7 @@ import logging
 import argparse
 import aiohttp
 import json
+import asyncio
 from functools import partial
 from pathlib import Path
 from aiohttp import web
@@ -53,7 +54,8 @@ async def _files_handler(request, ipfs_url, django_url):
         else:
             new_query.add(key, val)
 
-    return await ipfs_proxy_handler(request, ipfs_url, query=new_query)
+    response, _ = await ipfs_proxy_handler(request, ipfs_url, query=new_query)
+    return response
 
 
 async def _auth_handler(request, ipfs_url, django_url):
@@ -64,7 +66,31 @@ async def _auth_handler(request, ipfs_url, django_url):
     if auth_response is not None:
         return auth_response
 
-    return await ipfs_proxy_handler(request, ipfs_url)
+    response, _ = await ipfs_proxy_handler(request, ipfs_url)
+    return response
+
+
+async def _add_handler(request, ipfs_url, django_url):
+    """
+    Handler for any request that just needs authentication and nothing more
+    """
+    auth_response = await _authenticate(request, django_url)
+    if auth_response is not None:
+        return auth_response
+    auth = request.headers['Authorization']
+
+    response, body = await ipfs_proxy_handler(request, ipfs_url)
+    
+    # Response can stream with progress=true, so get the last line
+    last_line = body.decode('utf-8').strip().split('\n')[-1]
+    multihash = json.loads(last_line)['Hash']
+
+    if response.status == 200 and request.query.get('pin', 'true') == 'true':
+        # NOTE: can't just call _add_pins here, it will wait forever
+        # Not sure why, but something to do with the stream response that hasn't
+        # been returned yet
+        asyncio.ensure_future(_add_pins([multihash], 'recursive', ipfs_url, django_url, auth))
+    return response
 
 
 async def _pins_from_multihash(multihash, ipfs_url, pin_type, first=True):
@@ -98,9 +124,9 @@ async def _pins_from_multihash(multihash, ipfs_url, pin_type, first=True):
     return refs
 
 
-async def _get_pins_django(request, django_url, include_mfs=False):
+async def _get_pins_django(django_url, auth, include_mfs=False):
     pins_url = f'{django_url}/api/pins/'
-    headers = {'Authorization': request.headers['Authorization']}
+    headers = {'Authorization': auth}
     async with aiohttp.ClientSession() as session:
         async with session.request('GET', pins_url, headers=headers) as resp:
             if resp.status != 200:
@@ -121,24 +147,24 @@ async def _get_pins_django(request, django_url, include_mfs=False):
             return {'Keys': out_pins}
 
 
-async def _add_pins_django(pins, request, django_url):
+async def _add_pins_django(pins, django_url, auth):
     for pin in pins:
         pin['pin_type'] = PIN_TYPE_CHOICES.index(pin['pin_type'])
     pins_url = f'{django_url}/api/pins/'
-    headers = {'Authorization': request.headers['Authorization']}
+    headers = {'Authorization': auth}
     async with aiohttp.ClientSession() as session:
         async with session.request('POST', pins_url, headers=headers, json=pins) as resp:
             return resp
 
 
-async def _delete_pins_django(pins, request, django_url):
+async def _delete_pins_django(pins, django_url, auth):
     for pin in pins:
         if 'block_size' in pin:
             del pin['block_size']
         pin['pin_type'] = PIN_TYPE_CHOICES.index(pin['pin_type'])
-    logging.info(pins)
+
     pins_url = f'{django_url}/api/delete-pins/'
-    headers = {'Authorization': request.headers['Authorization']}
+    headers = {'Authorization': auth}
     async with aiohttp.ClientSession() as session:
         async with session.request('POST', pins_url, headers=headers, json=pins) as resp:
             return resp
@@ -148,26 +174,19 @@ async def _pin_ls_handler(request, ipfs_url, django_url):
     """
     Get the pins from django/the database and return them
     """
-    ret = await _get_pins_django(request, django_url)
+    auth = request.headers['Authorization']
+    ret = await _get_pins_django(django_url, auth)
     if not isinstance(ret, dict):
         return web.Response(status=ret.status, text=await ret.text())
     return web.json_response(ret)
 
 
-async def _pin_add_handler(request, ipfs_url, django_url):
-    '''
-    Recreates the ipfs pin logic
-    TODO: move this logic into django
-    '''
+async def _add_pins(multihash_args, pin_type, ipfs_url, django_url, auth):
     # Get pins from django
-    ret = await _get_pins_django(request, django_url)
+    ret = await _get_pins_django(django_url, auth)
     if not isinstance(ret, dict):
         return web.Response(status=ret.status, text=await ret.text())
     django_pins = ret
-
-    multihash_args = request.query.getall('arg', [])
-    pin_type = ('recursive' if request.query.get('recursive', 'true') == 'true'
-                else 'direct')
 
     # If any one of the pins fails, need to return error, and not pin any of
     # the other hashes
@@ -212,16 +231,27 @@ async def _pin_add_handler(request, ipfs_url, django_url):
     # NOTE: if this fails, we should roll back the direct pins we added to ipfs
     # but we can also let the garbage collector take care of it
     if len(add_pins) > 0:
-        resp = await _add_pins_django(add_pins, request, django_url)
+        resp = await _add_pins_django(add_pins, django_url, auth)
         if resp.status != 201:
             return web.Response(status=resp.status, text=await resp.text())
 
     # Delete replaced pins (this will not affect disk usage, since duplicates
     # shouldn't count)
     if len(delete_pins) > 0:
-        await _delete_pins_django(delete_pins, request, django_url)
+        await _delete_pins_django(delete_pins, django_url, auth)
 
-    return web.json_response({'Pins': multihash_args})
+
+async def _pin_add_handler(request, ipfs_url, django_url):
+    '''
+    Recreates the ipfs pin logic
+    TODO: move this logic into django
+    '''
+    multihash_args = request.query.getall('arg', [])
+    pin_type = ('recursive' if request.query.get('recursive', 'true') == 'true'
+                else 'direct')
+    auth = request.headers['Authorization']
+    ret = await _add_pins(multihash_args, pin_type, ipfs_url, django_url, auth)
+    return ret or web.json_response({'Pins': multihash_args})
 
 
 async def _pin_rm_handler(request, ipfs_url, django_url):
@@ -232,7 +262,8 @@ async def _pin_rm_handler(request, ipfs_url, django_url):
     """
     multihash_args = request.query.getall('arg', [])
 
-    ret = await _get_pins_django(request, django_url)
+    auth = request.headers['Authorization']
+    ret = await _get_pins_django(django_url, auth)
     if not isinstance(ret, dict):
         return web.Response(status=ret.status, text=await ret.text())
     django_pins = ret
@@ -245,6 +276,7 @@ async def _pin_rm_handler(request, ipfs_url, django_url):
         if pin_type_django == 'recursive':
             ret = await _pins_from_multihash(multihash, ipfs_url, pin_type_django)
             if not isinstance(ret, list):
+                import pdb; pdb.set_trace()
                 return web.Response(status=ret.status, text=await ret.text())
             delete_pins += ret
         elif pin_type_django == 'direct':
@@ -261,7 +293,7 @@ async def _pin_rm_handler(request, ipfs_url, django_url):
             return web.json_response(msg, status=500)
     
     if len(delete_pins) > 0:
-        await _delete_pins_django(delete_pins, request, django_url)
+        await _delete_pins_django(delete_pins, django_url, auth)
 
     return web.json_response({'Pins': multihash_args})
 
@@ -297,7 +329,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Set up logging
-    logging.basicConfig(format='%(asctime)s %(message)s',
+    logging.basicConfig(format='server proxy: %(asctime)s %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p',
                         level=args.loglvl,
                         filename=args.logfile)
@@ -329,11 +361,17 @@ if __name__ == "__main__":
     app = web.Application()
 
     routes = []
+    # -----
+    # Misc
+    # -----
+    add_handler = partial(_add_handler, **kwargs)
+    routes.append((['add'], partial(_add_handler, **kwargs)))
+
     # -----------------------------
     # Commands requiring auth only
     # -----------------------------
     auth_handler = partial(_auth_handler, **kwargs)
-    auth_commands = ['add', 'cat', 'get', 'ls', 'refs', 'object/data',
+    auth_commands = ['cat', 'get', 'ls', 'refs', 'object/data',
                      'object/diff', 'object/get', 'object/links', 'object/new',
                      'object/patch/add-link', 'object/patch/append-data',
                      'object/patch/rm-link', 'object/patch/set-data',
