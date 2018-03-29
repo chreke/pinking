@@ -101,49 +101,50 @@ async def _pins_from_multihash(multihash, ipfs_url, pin_type, first=True):
     refs = []
     stat_url = f'{ipfs_url}/api/v0/object/stat'
     links_url = f'{ipfs_url}/api/v0/object/links'
-    async with aiohttp.ClientSession() as session:
-        async with session.request('POST', stat_url, params={'arg': multihash}) as resp:
-            if resp.status != 200:
-                return resp
-            block_size = json.loads(await resp.text())['BlockSize']
-            refs.append({'multihash': multihash, 'block_size': block_size,
-                         'pin_type': pin_type if first else 'indirect'})
+    resp = await app['session'].request('POST', stat_url, params={'arg': multihash}, timeout=3)
+    if resp.status != 200:
+        return resp
+    block_size = json.loads(await resp.text())['BlockSize']
+    refs.append({'multihash': multihash, 'block_size': block_size,
+                 'pin_type': pin_type if first else 'indirect'})
 
-        # Recusively traverse children
-        async with session.request('POST', links_url, params={'arg': multihash}) as resp:
-            if resp.status != 200:
-                return resp
-            links = json.loads(await resp.text()).get('Links', None) or []
-            for link in links:
-                ret = await _pins_from_multihash(
-                    link['Hash'], ipfs_url, pin_type, first=False)
-                if not isinstance(ret, list):
-                    return ret
-                refs += ret
+    resp = await app['session'].request('POST', links_url, params={'arg': multihash})
+
+    if resp.status != 200:
+        return resp
+
+    # Recusively traverse children
+    links = json.loads(await resp.text()).get('Links', None) or []
+    for link in links:
+        ret = await _pins_from_multihash(
+            link['Hash'], ipfs_url, pin_type, first=False)
+        if not isinstance(ret, list):
+            return ret
+        refs += ret
+
     return refs
 
 
 async def _get_pins_django(django_url, auth, include_mfs=False):
     pins_url = f'{django_url}/api/pins/'
     headers = {'Authorization': auth}
-    async with aiohttp.ClientSession() as session:
-        async with session.request('GET', pins_url, headers=headers) as resp:
-            if resp.status != 200:
-                return resp
-            pins = json.loads(await resp.text())
+    async with app['session'].request('GET', pins_url, headers=headers) as resp:
+        if resp.status != 200:
+            return resp
+        pins = json.loads(await resp.text())
 
-            # Massage pins to the ipfs api format
-            out_pins = {}
-            for pin in pins:
-                pin_type = PIN_TYPE_CHOICES[pin['pin_type']]
-                if pin_type == 'mfs' and not include_mfs:
-                    continue
-                multihash = pin['multihash']
-                if pin_type == 'indirect' and multihash in out_pins:
-                    continue # direct/recursive/mfs wins over indirect
-                out_pins[multihash] = {'Type': pin_type}
+        # Massage pins to the ipfs api format
+        out_pins = {}
+        for pin in pins:
+            pin_type = PIN_TYPE_CHOICES[pin['pin_type']]
+            if pin_type == 'mfs' and not include_mfs:
+                continue
+            multihash = pin['multihash']
+            if pin_type == 'indirect' and multihash in out_pins:
+                continue # direct/recursive/mfs wins over indirect
+            out_pins[multihash] = {'Type': pin_type}
 
-            return {'Keys': out_pins}
+        return {'Keys': out_pins}
 
 
 async def _add_pins_django(pins, django_url, auth):
@@ -151,9 +152,7 @@ async def _add_pins_django(pins, django_url, auth):
         pin['pin_type'] = PIN_TYPE_CHOICES.index(pin['pin_type'])
     pins_url = f'{django_url}/api/pins/'
     headers = {'Authorization': auth}
-    async with aiohttp.ClientSession() as session:
-        async with session.request('POST', pins_url, headers=headers, json=pins) as resp:
-            return resp
+    return await app['session'].request('POST', pins_url, headers=headers, json=pins)
 
 
 async def _delete_pins_django(pins, django_url, auth):
@@ -164,9 +163,7 @@ async def _delete_pins_django(pins, django_url, auth):
 
     pins_url = f'{django_url}/api/delete-pins/'
     headers = {'Authorization': auth}
-    async with aiohttp.ClientSession() as session:
-        async with session.request('POST', pins_url, headers=headers, json=pins) as resp:
-            return resp
+    return await app['session'].request('POST', pins_url, headers=headers, json=pins)
 
 
 async def _pin_ls_handler(request, ipfs_url, django_url):
@@ -221,10 +218,9 @@ async def _add_pins(multihash_args, pin_type, ipfs_url, django_url, auth):
     for pin in add_pins:
         pin_params['arg'] = pin['multihash']
 
-    async with aiohttp.ClientSession() as session:
-        async with session.request('POST', pin_url, params=pin_params) as resp:
-            if resp.status != 200:
-                return web.Response(status=resp.status, text=await resp.text())
+    async with app['session'].request('POST', pin_url, params=pin_params) as resp:
+        if resp.status != 200:
+            return web.Response(status=resp.status, text=await resp.text())
 
     # Add new pins to django
     # NOTE: if this fails, we should roll back the direct pins we added to ipfs
@@ -277,7 +273,6 @@ async def _pin_rm_handler(request, ipfs_url, django_url):
         if pin_type_django == 'recursive':
             ret = await _pins_from_multihash(multihash, ipfs_url, pin_type_django)
             if not isinstance(ret, list):
-                import pdb; pdb.set_trace()
                 return web.Response(status=ret.status, text=await ret.text())
             delete_pins += ret
         elif pin_type_django == 'direct':
@@ -307,8 +302,12 @@ async def _pin_verify_handler(request, ipfs_url, django_url):
     return web.Response(status=501, text='Error: this api is not implemented by pinking')
 
 
-async def _cleanup():
-    pass
+async def _on_startup(app):
+    app['session'] = aiohttp.ClientSession()
+
+
+async def _on_cleanup(app):
+    await app['session'].close()
 
 
 if __name__ == "__main__":
@@ -360,6 +359,8 @@ if __name__ == "__main__":
     django_url = f'http://127.0.0.1:{args.django_port}'
     kwargs = {'ipfs_url': ipfs_url, 'django_url': django_url}
     app = web.Application()
+    app.on_startup.append(_on_startup)
+    app.on_cleanup.append(_on_cleanup)
 
     routes = []
     # -----
@@ -415,4 +416,4 @@ if __name__ == "__main__":
     try:
         web.run_app(app, host='0.0.0.0', ssl_context=ssl_context, port=args.listen_port)
     except KeyboardInterrupt:
-        asyncio.get_event_loop().run_until_complete(_cleanup())
+        pass
