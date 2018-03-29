@@ -77,18 +77,21 @@ async def _add_handler(request, ipfs_url, django_url):
         return auth_response
     auth = request.headers['Authorization']
 
-    response, body = await ipfs_proxy_handler(request, ipfs_url, return_body=True)
-    
+    # NOTE: don't write eof in the handler, since then the response would be over
+    # but we still need to add the pins to django before we want to return
+    response, body = await ipfs_proxy_handler(request, ipfs_url, return_body=True,
+                                              write_eof=False)
+
     # Response can stream with progress=true, so get the last line which
     # contains the final hash
     last_line = body.decode('utf-8').strip().split('\n')[-1]
     multihash = json.loads(last_line)['Hash']
 
     if response.status == 200 and request.query.get('pin', 'true') == 'true':
-        # NOTE: can't just call _add_pins here, it will wait forever
-        # Not sure why, but something to do with the stream response that hasn't
-        # been returned yet
-        asyncio.ensure_future(_add_pins([multihash], 'recursive', ipfs_url, django_url, auth))
+        await _add_pins([multihash], 'recursive', ipfs_url, django_url, auth)
+
+    # Now write eof
+    await response.write_eof()
     return response
 
 
@@ -101,7 +104,7 @@ async def _pins_from_multihash(multihash, ipfs_url, pin_type, first=True):
     refs = []
     stat_url = f'{ipfs_url}/api/v0/object/stat'
     links_url = f'{ipfs_url}/api/v0/object/links'
-    resp = await app['session'].request('POST', stat_url, params={'arg': multihash}, timeout=3)
+    resp = await app['session'].request('POST', stat_url, params={'arg': multihash})
     if resp.status != 200:
         return resp
     block_size = json.loads(await resp.text())['BlockSize']

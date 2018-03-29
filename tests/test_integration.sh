@@ -52,11 +52,12 @@ python proxies/server_proxy.py --listen_port $SERVER_PROXY_PORT \
 sleep 3
 
 function kill_all {
+  sleep 1
+  kill %4
+  kill %5
   kill %1
   kill %2
   kill %3
-  kill %4
-  kill %5
 }
 
 function test {
@@ -94,7 +95,6 @@ echo "hello world" > testfile
 test "add testfile"
 HASH=$(echo $TEST_STDOUT | cut -d " " -f 2)
 
-sleep 1 # have to sleep a bit for the add pin to come through
 test "pin ls" # testfile should be pinned recursively
 
 test "pin rm $HASH"
@@ -111,6 +111,7 @@ echo "hello world2" > testfile2
 test "add testfile2"
 HASH2=$(echo $TEST_STDOUT | cut -d " " -f 2)
 
+test "pin ls"
 test "pin rm $HASH $HASH2"
 test "pin ls"
 

@@ -17,7 +17,7 @@ async def _request_data_streamer(writer, request):
 
 
 async def ipfs_proxy_handler(request, target_url, query=None, auth=None,
-                             return_body=False):
+                             return_body=False, write_eof=True):
     """
     Proxy handler for requests to ipfs daemon.
     Streams the content if encoding is chunked (e.g. ipfs add), passing it on
@@ -59,7 +59,7 @@ async def ipfs_proxy_handler(request, target_url, query=None, auth=None,
                     await proxy_response.write(chunk)
                     if return_body: body += chunk
                     chunk = await ipfs_response.content.read(CHUNK_SIZE)
-                await proxy_response.write_eof()
+                if write_eof: await proxy_response.write_eof()
 
     if return_body:
         return proxy_response, body
