@@ -54,8 +54,7 @@ async def _files_handler(request, ipfs_url, django_url):
         else:
             new_query.add(key, val)
 
-    response, _ = await ipfs_proxy_handler(request, ipfs_url, query=new_query)
-    return response
+    return await ipfs_proxy_handler(request, ipfs_url, query=new_query)
 
 
 async def _auth_handler(request, ipfs_url, django_url):
@@ -66,8 +65,7 @@ async def _auth_handler(request, ipfs_url, django_url):
     if auth_response is not None:
         return auth_response
 
-    response, _ = await ipfs_proxy_handler(request, ipfs_url)
-    return response
+    return await ipfs_proxy_handler(request, ipfs_url)
 
 
 async def _add_handler(request, ipfs_url, django_url):
@@ -79,9 +77,10 @@ async def _add_handler(request, ipfs_url, django_url):
         return auth_response
     auth = request.headers['Authorization']
 
-    response, body = await ipfs_proxy_handler(request, ipfs_url)
+    response, body = await ipfs_proxy_handler(request, ipfs_url, return_body=True)
     
-    # Response can stream with progress=true, so get the last line
+    # Response can stream with progress=true, so get the last line which
+    # contains the final hash
     last_line = body.decode('utf-8').strip().split('\n')[-1]
     multihash = json.loads(last_line)['Hash']
 

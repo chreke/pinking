@@ -16,12 +16,13 @@ async def _request_data_streamer(writer, request):
         chunk = await request.content.read(CHUNK_SIZE)
 
 
-async def ipfs_proxy_handler(request, target_url, query=None, auth=None):
+async def ipfs_proxy_handler(request, target_url, query=None, auth=None,
+                             return_body=False):
     """
     Proxy handler for requests to ipfs daemon.
     Streams the content if encoding is chunked (e.g. ipfs add), passing it on
     to the daemon. Then the response from the daemon is streamed back to the
-    caller.
+    caller. Returns the proxy response, and the last message
 
     Set the proxy target url using `partial` in functools
     """
@@ -53,11 +54,13 @@ async def ipfs_proxy_handler(request, target_url, query=None, auth=None):
                 proxy_response.enable_chunked_encoding()
                 await proxy_response.prepare(request)
                 chunk = await ipfs_response.content.read(CHUNK_SIZE)
-                body = chunk
+                if return_body: body = chunk
                 while chunk:
                     await proxy_response.write(chunk)
-                    body += chunk
+                    if return_body: body += chunk
                     chunk = await ipfs_response.content.read(CHUNK_SIZE)
                 await proxy_response.write_eof()
 
-    return proxy_response, body
+    if return_body:
+        return proxy_response, body
+    return proxy_response

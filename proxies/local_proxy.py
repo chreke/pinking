@@ -11,8 +11,7 @@ async def _proxy_handler(request, target_url, auth):
     """
     Intercept calls to ipfs and add auth header
     """
-    response, _ = await ipfs_proxy_handler(request, target_url, auth=auth)
-    return response
+    return await ipfs_proxy_handler(request, target_url, auth=auth)
 
 
 async def _cleanup():
