@@ -250,7 +250,9 @@ async def _pin_add_handler(request, ipfs_url, django_url):
                 else 'direct')
     auth = request.headers['Authorization']
     ret = await _add_pins(multihash_args, pin_type, ipfs_url, django_url, auth)
-    return ret or web.json_response({'Pins': multihash_args})
+    if ret is not None:
+        return ret
+    return web.json_response({'Pins': multihash_args})
 
 
 async def _pin_rm_handler(request, ipfs_url, django_url):
