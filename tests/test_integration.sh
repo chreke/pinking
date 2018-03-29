@@ -6,12 +6,12 @@
 # compares the output for different tests
 
 # Kill all ipfs processes and local/server proxy
-ps -A | grep ipfs | awk '{print $1}' | xargs -I {} kill -9 {}
+ps -A | grep ipfs | awk '{print $1}' | xargs -I {} kill -9 {} 2> /dev/null
 # Kill proxies
-ps -A | grep local_proxy | awk '{print $1}' | xargs -I {} kill -9 {}
-ps -A | grep server_proxy | awk '{print $1}' | xargs -I {} kill -9 {}
+ps -A | grep local_proxy | awk '{print $1}' | xargs -I {} kill -9 {} 2> /dev/null
+ps -A | grep server_proxy | awk '{print $1}' | xargs -I {} kill -9 {} 2> /dev/null
 # Kill django
-ps -A | grep runserver | awk '{print $1}' | xargs -I {} kill -9 {}
+ps -A | grep runserver | awk '{print $1}' | xargs -I {} kill -9 {} 2> /dev/null
 
 # Launch two ipfs daemons with different 
 IPFS1=/tmp/.pinking_ipfs1
@@ -40,27 +40,47 @@ python manage.py flush --noinput
 echo "from django.contrib.auth.models import User; \
   User.objects.create_superuser('test', 'test@example.com', 'test')"\
   | python manage.py shell
-python manage.py runserver > /dev/null & # 2>&1 &
+python manage.py runserver > /dev/null 2>&1 &
 
 python proxies/local_proxy.py --listen_port $PROXY_PORT \
                               --target_url http://127.0.0.1:$SERVER_PROXY_PORT \
                               -u test \
-                              -p test & #> /dev/null 2>&1 &
+                              -p test > /dev/null 2>&1 &
 python proxies/server_proxy.py --listen_port $SERVER_PROXY_PORT \
                                --ipfs_port $IPFS2_PORT \
-                               --django_port $DJANGO_PORT & # > /dev/null 2>&1 &
+                               --django_port $DJANGO_PORT > /dev/null 2>&1 &
 sleep 3
+
+function kill_all {
+  kill %1
+  kill %2
+  kill %3
+  kill %4
+  kill %5
+}
 
 function test {
   # Run command against both apis and compare
-  OUT1=$(ipfs --api $IPFS1_API $1)
-  OUT2=$(ipfs --api $PROXY_API $1)
-  #echo $OUT1
+  echo "Running 'ipfs $1'"
+  OUT1=$(ipfs --api $IPFS1_API $1 2> errfile1)
+  ERR1=$(< errfile1)
+  OUT2=$(ipfs --api $PROXY_API $1 2> errfile2)
+  ERR2=$(< errfile2)
   if [ "$OUT1" != "$OUT2" ]; then
-    echo "$OUT1 != $OUT2"
+    echo "STDOUT: ipfs $1 differed between node and proxy"
+    echo "IPFS: $OUT1 != PROXY: $OUT2"
+    kill_all
     exit 1
   fi
-  TEST_OUT=$OUT1
+  if [ "$ERR1" != "$ERR2" ]; then
+    echo "STDERR: ipfs $1 differed between node and proxy"
+    echo "IPFS: $ERR1 != PROXY: $ERR2"
+    kill_all
+    exit 1
+  fi
+  TEST_STDOUT=$OUT1
+  TEST_STDERR=$ERR1
+  echo "Result: $OUT1 $ERR1"
 }
 
 # First remove pins that automatically come with the repos
@@ -72,16 +92,29 @@ test "pin ls"
 #Initialize a repository
 echo "hello world" > testfile
 test "add testfile"
-HASH=$(echo $TEST_OUT | cut -d " " -f 2)
-echo $HASH
+HASH=$(echo $TEST_STDOUT | cut -d " " -f 2)
 
 sleep 1 # have to sleep a bit for the add pin to come through
+test "pin ls" # testfile should be pinned recursively
+
+test "pin rm $HASH"
 test "pin ls"
 
+test "pin add $HASH"
+test "pin ls"
+
+test "pin add --recursive=false $HASH" # should fail
+test "pin rm $HASH" # delete the recursive one
+test "pin add --recursive=false $HASH" # should work now
+
+echo "hello world2" > testfile2
+test "add testfile2"
+HASH2=$(echo $TEST_STDOUT | cut -d " " -f 2)
+
+test "pin rm $HASH $HASH2"
+test "pin ls"
+
+echo "All tests passed"
+
 # Kill all processes we started in the beginning
-sleep 2
-kill %1
-kill %2
-kill %3
-kill %4
-kill %5
+kill_all
