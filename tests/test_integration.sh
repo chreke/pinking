@@ -63,9 +63,14 @@ function kill_all {
 function test {
   # Run command against both apis and compare
   echo "Running 'ipfs $1'"
-  OUT1=$(ipfs --api $IPFS1_API $1 2> errfile1)
+  if [ "$2" == "sort" ]; then
+    OUT1=$(ipfs --api $IPFS1_API $1 2> errfile1 | sort)
+    OUT2=$(ipfs --api $PROXY_API $1 2> errfile2 | sort)
+  else
+    OUT1=$(ipfs --api $IPFS1_API $1 2> errfile1)
+    OUT2=$(ipfs --api $PROXY_API $1 2> errfile2)
+  fi
   ERR1=$(< errfile1)
-  OUT2=$(ipfs --api $PROXY_API $1 2> errfile2)
   ERR2=$(< errfile2)
   if [ "$OUT1" != "$OUT2" ]; then
     echo "STDOUT: ipfs $1 differed between node and proxy"
@@ -88,20 +93,21 @@ function test {
 ipfs --api $IPFS1_API pin ls | grep recursive | cut -d " " -f 1 | xargs -I {} ipfs --api $IPFS1_API pin rm {}
 ipfs --api $IPFS2_API pin ls | grep recursive | cut -d " " -f 1 | xargs -I {} ipfs --api $IPFS2_API pin rm {}
 
-test "pin ls"
+test "pin ls" sort
 
 #Initialize a repository
 echo "hello world" > testfile
 test "add testfile"
 HASH=$(echo $TEST_STDOUT | cut -d " " -f 2)
 
-test "pin ls" # testfile should be pinned recursively
+test "pin ls" sort # testfile should be pinned recursively
 
 test "pin rm $HASH"
-test "pin ls"
+test "pin rm $HASH" # remove it again, to see if error message is the same
+test "pin ls" sort
 
 test "pin add $HASH"
-test "pin ls"
+test "pin ls" sort
 
 test "pin add --recursive=false $HASH" # should fail
 test "pin rm $HASH" # delete the recursive one
@@ -111,9 +117,20 @@ echo "hello world2" > testfile2
 test "add testfile2"
 HASH2=$(echo $TEST_STDOUT | cut -d " " -f 2)
 
-test "pin ls"
+test "pin ls" sort
 test "pin rm $HASH $HASH2"
-test "pin ls"
+test "pin ls" sort
+
+test "files cp /ipfs/$HASH /myfile"
+test "files cp /ipfs/$HASH /myfile" # try it again, should fail
+test "files rm /myfile"
+test "files rm /myfile" # try it again, should fail
+test "files rm /" # should fail
+test "files mkdir /testdir"
+test "files cp /ipfs/$HASH /myfile/myfile"
+# NOTE: this works, but returns an error message with the full user path for now
+#test "files rm /testdir" # should fail
+#test "files rm -r /testdir"
 
 echo "All tests passed"
 

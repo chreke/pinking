@@ -34,16 +34,10 @@ async def _authenticate(request, django_url):
     return None
 
 
-async def _files_handler(request, ipfs_url, django_url):
+def _rewrite_files_paths(request):
     """
-    Handler for files requests (MFS). Authenticate user and then
-    rewrite paths to keep within user sandbox
+    Rewrites paths in requests to use the MFS user root
     """
-    auth_response = await _authenticate(request, django_url)
-    if auth_response is not None:
-        return auth_response
-
-    # Rewrite query paths
     username, pwd = _get_user_password(request)
     username_b64 = base64.b64encode(username.encode('utf-8')).decode('utf-8')
     new_query = MultiDict()
@@ -53,8 +47,116 @@ async def _files_handler(request, ipfs_url, django_url):
             new_query.add(key, new_path)
         else:
             new_query.add(key, val)
+    return new_query
 
+
+async def _files_rm_handler(request, ipfs_url, django_url):
+    """
+    A special handler for `files rm`, since it needs to return an error if
+    trying to delete root
+    """
+    rm_paths = request.query.getall('arg', None)
+    if '/' in rm_paths:
+        error_msg = {'Message': f'cannot delete root', 'Code': 0}
+        return web.json_response(error_msg, status=500)
+
+    response = await _files_repin_rewrite_handler(request, ipfs_url, django_url)
+    return response
+
+
+async def _files_rewrite_handler(request, ipfs_url, django_url):
+    """
+    A handler for MFS commands that don't change any MFS structure, but only reads it
+    The handler rewrites all access paths within MFS to use the MFS user root
+    instead of the real root
+    """
+    auth_response = await _authenticate(request, django_url)
+    if auth_response is not None:
+        return auth_response
+
+    new_query = _rewrite_files_paths(request)
     return await ipfs_proxy_handler(request, ipfs_url, query=new_query)
+
+
+async def _files_repin_rewrite_handler(request, ipfs_url, django_url):
+    """
+    A handler for MFS commands that do change the MFS structure. The general
+    procedure is:
+    1. Rewrite paths (like in _files_rewrite_handler)
+    2. Get the hash of the current MFS user root
+        1. Create the user root if it doesn't exist
+    3. Proxy the request to IPFS
+    4. Get the new MFS user root hash
+    5. Update the django database
+        1. If this fails, roll back to previous root hash (e.g. if out of storage)
+    """
+    auth_response = await _authenticate(request, django_url)
+    if auth_response is not None:
+        return auth_response
+
+    username, pwd = _get_user_password(request)
+    username_b64 = base64.b64encode(username.encode('utf-8')).decode('utf-8')
+
+    # Get the MFS user root hash
+    files_url = f'{ipfs_url}/api/v0/files'
+    resp = await app['session'].request(
+        'POST', f'{files_url}/stat', params={'arg': f'/{username_b64}'})
+    if resp.status != 200:
+        if (await resp.json())['Message'] == 'file does not exist':
+            # Create the user root if it doesn't exist
+            resp = await app['session'].request(
+                'POST', f'{files_url}/mkdir', params={'arg': f'/{username_b64}'})
+        else:
+            return web.Response(status=resp.status, text=text)
+    resp_json = await resp.json()
+    prev_root_hash = None if resp_json is None else resp_json['Hash']
+
+    # Proxy the request to ipfs
+    new_query = _rewrite_files_paths(request)
+    response = await ipfs_proxy_handler(
+        request, ipfs_url, query=new_query, write_eof=False)
+    if response.status != 200:
+        await response.write_eof()
+        return response
+
+    # Read the new root hash
+    resp = await app['session'].request(
+        'POST', f'{files_url}/stat', params={'arg': f'/{username_b64}'})
+    if resp.status != 200:
+        await response.write_eof()
+        return web.Response(status=resp.status, text=await resp.text())
+    new_root_hash = (await resp.json())['Hash']
+
+    # Update the database if the root hash changed
+    error_response = None
+    if new_root_hash != prev_root_hash:
+        # TODO: this would be better done in one transaction
+        auth = request.headers['Authorization']
+        if prev_root_hash is not None:
+            error_response = await _rm_pins(
+                [prev_root_hash], ipfs_url, django_url, auth, include_mfs=True)
+        # There seems to be a bug in ClientSession where two quick consecutive requests
+        # to django here, the socket fails with "[Errno 54] Connection reset by peer"
+        # We can fix this by sleeping for a bit, or using a fresh ClientSession
+        await asyncio.sleep(0.1)
+        error_response = await _add_pins(
+            [new_root_hash], 'mfs', ipfs_url, django_url, auth)
+
+        # If there was an error (e.g. out of storage), then roll back to previous
+        # user root hash
+        # TODO: can we do this in one step with files/write?
+        if error_response is not None:
+            await app['session'].request(
+                'POST', f'{files_url}/rm', params={'arg': f'/{username_b64}'})
+            if prev_root_hash is not None:
+                await app['session'].request(
+                    'POST', f'{files_url}/cp',
+                    params={'arg': f'/ipfs/{prev_root_hash}', 'arg2': f'/{username_b64}'})
+
+    await response.write_eof()
+    if error_response is not None:
+        return error_response
+    return response
 
 
 async def _auth_handler(request, ipfs_url, django_url):
@@ -182,7 +284,7 @@ async def _pin_ls_handler(request, ipfs_url, django_url):
 
 async def _add_pins(multihash_args, pin_type, ipfs_url, django_url, auth):
     # Get pins from django
-    ret = await _get_pins_django(django_url, auth)
+    ret = await _get_pins_django(django_url, auth, include_mfs=(pin_type=='mfs'))
     if not isinstance(ret, dict):
         return web.Response(status=ret.status, text=await ret.text())
     django_pins = ret
@@ -240,10 +342,6 @@ async def _add_pins(multihash_args, pin_type, ipfs_url, django_url, auth):
 
 
 async def _pin_add_handler(request, ipfs_url, django_url):
-    '''
-    Recreates the ipfs pin logic
-    TODO: move this logic into django
-    '''
     multihash_args = request.query.getall('arg', [])
     pin_type = ('recursive' if request.query.get('recursive', 'true') == 'true'
                 else 'direct')
@@ -254,16 +352,8 @@ async def _pin_add_handler(request, ipfs_url, django_url):
     return web.json_response({'Pins': multihash_args})
 
 
-async def _pin_rm_handler(request, ipfs_url, django_url):
-    """
-    Remove pins by first getting all user pins from django, then
-    figure out the type of the pin to be removed and which indirect (if any)
-    pins that should also be removed
-    """
-    multihash_args = request.query.getall('arg', [])
-
-    auth = request.headers['Authorization']
-    ret = await _get_pins_django(django_url, auth)
+async def _rm_pins(multihash_args, ipfs_url, django_url, auth, include_mfs=False):
+    ret = await _get_pins_django(django_url, auth, include_mfs=include_mfs)
     if not isinstance(ret, dict):
         return web.Response(status=ret.status, text=await ret.text())
     django_pins = ret
@@ -273,7 +363,7 @@ async def _pin_rm_handler(request, ipfs_url, django_url):
         if multihash not in django_pins['Keys']:
             return web.json_response({'Message': 'not pinned', 'Code': 0}, status=500)
         pin_type_django = django_pins['Keys'][multihash]['Type']
-        if pin_type_django == 'recursive':
+        if pin_type_django in ['recursive', 'mfs']:
             ret = await _pins_from_multihash(multihash, ipfs_url, pin_type_django)
             if not isinstance(ret, list):
                 return web.Response(status=ret.status, text=await ret.text())
@@ -294,15 +384,20 @@ async def _pin_rm_handler(request, ipfs_url, django_url):
     if len(delete_pins) > 0:
         await _delete_pins_django(delete_pins, django_url, auth)
 
+
+async def _pin_rm_handler(request, ipfs_url, django_url):
+    """
+    Remove pins by first getting all user pins from django, then
+    figure out the type of the pin to be removed and which indirect (if any)
+    pins that should also be removed
+    """
+    multihash_args = request.query.getall('arg', [])
+
+    auth = request.headers['Authorization']
+    ret = await _rm_pins(multihash_args, ipfs_url, django_url, auth)
+    if ret is not None:
+        return ret
     return web.json_response({'Pins': multihash_args})
-
-
-async def _pin_update_handler(request, ipfs_url, django_url):
-    pass
-
-
-async def _pin_verify_handler(request, ipfs_url, django_url):
-    return web.Response(status=501, text='Error: this api is not implemented by pinking')
 
 
 async def _on_startup(app):
@@ -366,15 +461,15 @@ if __name__ == "__main__":
     app.on_cleanup.append(_on_cleanup)
 
     routes = []
-    # -----
+    # ----
     # Misc
-    # -----
+    # ----
     add_handler = partial(_add_handler, **kwargs)
     routes.append((['add'], partial(_add_handler, **kwargs)))
 
-    # -----------------------------
+    # ----------------------------
     # Commands requiring auth only
-    # -----------------------------
+    # ----------------------------
     auth_handler = partial(_auth_handler, **kwargs)
     auth_commands = ['cat', 'get', 'ls', 'refs', 'object/data',
                      'object/diff', 'object/get', 'object/links', 'object/new',
@@ -387,12 +482,15 @@ if __name__ == "__main__":
     # ----------
     # ipfs files
     # ----------
-    files_handler = partial(_files_handler, **kwargs)
-    files_commands = ['chcid', 'cp', 'flush', 'ls', 'mkdir', 'mv', 'read',
-                      'rm', 'stat', 'write']
-    files_commands = [f'files/{command}' for command in files_commands]
-    routes.append((files_commands, files_handler))
-
+    files_rewrite_handler = partial(_files_rewrite_handler, **kwargs)
+    files_rewrite_commands = ['files/flush', 'files/ls', 'files/read', 'files/stat']
+    routes.append((files_rewrite_commands, files_rewrite_handler))
+    files_repin_rewrite_handler = partial(_files_repin_rewrite_handler, **kwargs)
+    files_repin_rewrite_commands = ['files/cp', 'files/mkdir', 'files/mv',
+                                    'files/write']
+    routes.append((files_repin_rewrite_commands, files_repin_rewrite_handler))
+    files_rm_handler = partial(_files_rm_handler, **kwargs)
+    routes.append((['files/rm'], files_rm_handler))
     # ---------
     # ipfs key
     # ---------
@@ -404,14 +502,22 @@ if __name__ == "__main__":
     routes.append(['key/rm'], _key_rm_handler)
     '''
 
-    # ---------
+    # --------
     # ipfs pin
-    # ---------
+    # --------
     routes.append((['pin/ls'], partial(_pin_ls_handler, **kwargs)))
     routes.append((['pin/add'], partial(_pin_add_handler, **kwargs)))
     routes.append((['pin/rm'], partial(_pin_rm_handler, **kwargs)))
-    routes.append((['pin/update'], partial(_pin_update_handler, **kwargs)))
-    routes.append((['pin/verify'], partial(_pin_verify_handler, **kwargs)))
+
+
+    # -------------------------------------
+    # API commands that are not implemented
+    # -------------------------------------
+    #not_implemented_handler = partial(_not_implemented_handler, **kwargs)
+    #not_implemented_commands = []
+    #routes.append((not_implemented_commands, not_implemented_handler))
+
+
     for paths, handler in routes:
         for path in paths:
             app.router.add_route('POST', f'/api/v0/{path}', handler)
