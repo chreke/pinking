@@ -10,6 +10,19 @@ from . import pins
 
 SPACE_PER_USER = 200 * 1024 * 1024  # 200 Megabytes
 
+class AuthView(
+        mixins.RetrieveModelMixin,
+        mixins.ListModelMixin,
+        viewsets.GenericViewSet
+):
+    """
+    Simple api endpoint that does nothing but check that basic auth goes through
+    """
+    serializer_class = UserSerializer
+
+    def get_queryset(self):
+        return None
+
 
 class MeView(
         mixins.RetrieveModelMixin,

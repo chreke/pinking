@@ -6,18 +6,21 @@ import aiohttp
 from aiohttp import web
 from aiohttp.web import StreamResponse
 
-CHUNK_SIZE = 256
+CHUNK_SIZE = 2**20 # roughly a megabyte
 
 @aiohttp.streamer
-async def _request_data_streamer(writer, request):
+async def _request_data_streamer(writer, request, chunk_transform=None):
     chunk = await request.content.read(CHUNK_SIZE)
     while chunk:
+        if chunk_transform is not None:
+            chunk = await chunk_transform(chunk)
         await writer.write(chunk)
         chunk = await request.content.read(CHUNK_SIZE)
 
 
 async def ipfs_proxy_handler(request, target_url, query=None, auth=None,
-                             return_body=False, write_eof=True):
+                             req_chunk_transform=None, resp_chunk_transform=None,
+                             write_eof=True):
     """
     Proxy handler for requests to ipfs daemon.
     Streams the content if encoding is chunked (e.g. ipfs add), passing it on
@@ -29,12 +32,12 @@ async def ipfs_proxy_handler(request, target_url, query=None, auth=None,
     target_url = urljoin(target_url, request.rel_url.path)
     headers = request.headers
     if query is None:
-        query = request.rel_url.query
+        query = request.query
     method = request.method
 
     async with aiohttp.ClientSession(auth=auth) as session:
         if headers.get('Transfer-Encoding', None) == 'chunked':
-            data = _request_data_streamer(request)
+            data = _request_data_streamer(request, req_chunk_transform)
             # For some reason, can't have 'Transfer-Encoding' set if
             # data is a stream
             del headers['Transfer-Encoding']
@@ -54,13 +57,11 @@ async def ipfs_proxy_handler(request, target_url, query=None, auth=None,
                 proxy_response.enable_chunked_encoding()
                 await proxy_response.prepare(request)
                 chunk = await ipfs_response.content.read(CHUNK_SIZE)
-                if return_body: body = chunk
                 while chunk:
+                    if resp_chunk_transform is not None:
+                        chunk = await resp_chunk_transform(chunk)
                     await proxy_response.write(chunk)
-                    if return_body: body += chunk
                     chunk = await ipfs_response.content.read(CHUNK_SIZE)
                 if write_eof: await proxy_response.write_eof()
 
-    if return_body:
-        return proxy_response, body
     return proxy_response

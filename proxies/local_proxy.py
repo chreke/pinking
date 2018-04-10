@@ -1,15 +1,32 @@
+import os
 import argparse
 import logging
 import getpass
+from pathlib import Path
+from psutil import Process, net_connections
 from aiohttp import web
 from aiohttp.helpers import BasicAuth
 from functools import partial
 from proxy import ipfs_proxy_handler
 
 
-async def _proxy_handler(request, target_url, auth):
+def _path_size(path, include_hidden=False):
+    if os.path.isfile(path):
+        return os.path.getsize(path)
+
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            total_size += os.path.getsize(fp)
+    return total_size
+
+
+async def _proxy_handler(request, target_url, auth, listen_port):
     """
     Intercept calls to ipfs and add auth header
+    If request is an add request, calculate the file/directory size and append
+    to multipart header.
     """
     return await ipfs_proxy_handler(request, target_url, auth=auth)
 
@@ -53,7 +70,7 @@ if __name__ == '__main__':
     app = web.Application()
     basic_auth = BasicAuth(username, password)
     proxy_handler = partial(_proxy_handler, target_url=args.target_url,
-                            auth=basic_auth)
+                            auth=basic_auth, listen_port=args.listen_port)
     app.router.add_route('*', '/{path:.*?}', proxy_handler)
     try:
         web.run_app(app, host='0.0.0.0', port=args.listen_port)

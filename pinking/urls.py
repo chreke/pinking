@@ -21,6 +21,7 @@ from pin import views
 
 router = routers.DefaultRouter()
 router.register('me', views.MeView, base_name='me')
+router.register('auth', views.AuthView, base_name='auth')
 router.register('pins', views.PinViewSet, base_name='pin')
 router.register('delete-pins', views.DeletePinViewSet, base_name='delete-pin')
 

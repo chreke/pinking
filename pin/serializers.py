@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from .models import Pin
-from . import pins
+from . import pins, views
 
 
 class PinSerializer(serializers.HyperlinkedModelSerializer):
@@ -26,11 +26,15 @@ class DeletePinSerializer(serializers.Serializer):
 
 class UserSerializer(serializers.ModelSerializer):
     space_used = serializers.SerializerMethodField()
+    space_total = serializers.SerializerMethodField()
 
     class Meta:
         model = get_user_model()
         read_only_fields = ('username', 'email')
-        fields = ('username', 'email', 'space_used')
+        fields = ('username', 'email', 'space_used', 'space_total')
 
     def get_space_used(self, user):
         return pins.space_used(user)
+
+    def get_space_total(self, user):
+        return views.SPACE_PER_USER

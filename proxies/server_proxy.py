@@ -5,6 +5,7 @@ import argparse
 import aiohttp
 import json
 import asyncio
+from collections import defaultdict
 from functools import partial
 from pathlib import Path
 from aiohttp import web
@@ -13,6 +14,11 @@ from proxy import ipfs_proxy_handler
 
 # TODO: fix this, already defined in pin.models.Pin but not sure how to import
 PIN_TYPE_CHOICES = ['direct', 'recursive', 'indirect', 'mfs']
+
+
+class StorageLimitExceeded(Exception):
+    pass
+
 
 def _get_user_password(request):
     basic_auth = request.headers.get('Authorization', None)
@@ -23,15 +29,39 @@ def _get_user_password(request):
 
 
 async def _authenticate(request, django_url):
-    #
-    # Check with Django
-    #
-
-    user, pwd = _get_user_password(request)
-    if user is None or pwd is None:
-        return web.Response(status=401)
-    logging.info(f'Authenticating with {user} {pwd}')
+    """
+    Check with Django
+    """
+    resp = await app['session'].request(
+        'GET', f'{django_url}/api/auth/', headers=request.headers)
+    await asyncio.sleep(0.1)
+    if resp.status != 200:
+        error_msg = {'Message': await resp.text(), 'Code': 0}
+        return web.json_response(error_msg, status=resp.status)
     return None
+
+
+_locks = defaultdict(lambda: False)
+async def _auth_and_lock(request, handler, handler_kwargs):
+    auth_response = await _authenticate(request, handler_kwargs['django_url'])
+    if auth_response is not None:
+        return auth_response
+
+    user, _ = _get_user_password(request)
+    if _locks.get(user) == True:
+        error_msg = {'Message': f'You can only do one request at a time', 'Code': 0}
+        return web.json_response(error_msg, status=429)
+
+    try:
+        _locks[user] = True
+        ret = await handler(request, **handler_kwargs)
+        _locks[user] = False
+        return ret
+    except:
+        _locks[user] = False
+        raise
+
+    _locks[user] = False
 
 
 def _rewrite_files_paths(request):
@@ -70,10 +100,6 @@ async def _files_rewrite_handler(request, ipfs_url, django_url):
     The handler rewrites all access paths within MFS to use the MFS user root
     instead of the real root
     """
-    auth_response = await _authenticate(request, django_url)
-    if auth_response is not None:
-        return auth_response
-
     new_query = _rewrite_files_paths(request)
     return await ipfs_proxy_handler(request, ipfs_url, query=new_query)
 
@@ -90,10 +116,6 @@ async def _files_repin_rewrite_handler(request, ipfs_url, django_url):
     5. Update the django database
         1. If this fails, roll back to previous root hash (e.g. if out of storage)
     """
-    auth_response = await _authenticate(request, django_url)
-    if auth_response is not None:
-        return auth_response
-
     username, pwd = _get_user_password(request)
     username_b64 = base64.b64encode(username.encode('utf-8')).decode('utf-8')
 
@@ -160,13 +182,6 @@ async def _files_repin_rewrite_handler(request, ipfs_url, django_url):
 
 
 async def _auth_handler(request, ipfs_url, django_url):
-    """
-    Handler for any request that just needs authentication and nothing more
-    """
-    auth_response = await _authenticate(request, django_url)
-    if auth_response is not None:
-        return auth_response
-
     return await ipfs_proxy_handler(request, ipfs_url)
 
 
@@ -174,27 +189,80 @@ async def _add_handler(request, ipfs_url, django_url):
     """
     Handler for any request that just needs authentication and nothing more
     """
-    auth_response = await _authenticate(request, django_url)
-    if auth_response is not None:
-        return auth_response
     auth = request.headers['Authorization']
+
+    forbidden_options = ['raw-leaves', 'nocopy', 'fscache']
+    for opt in forbidden_options:
+        if request.query.get(opt, 'false') != 'false':
+            error_msg = {'Message': f'"--{opt} is an expermental option not supported by pinking"',
+                         'Code': 0}
+            return web.json_response(error_msg, status=500)
+
+    do_pin = request.query.get('pin', 'true') == 'true'
+    if not do_pin:
+        # If the user only doesn't want to pin then no limits apply, just
+        # let it through
+        return await ipfs_proxy_handler(request, ipfs_url)
+
+    # Make a new query dict with pin=false (we dont want ipfs to pin it recursively,
+    # we'll handle that manually)
+    new_query = MultiDict()
+    for key, val in request.query.items():
+        if key == 'pin':
+            new_query.add(key, 'false')
+        else:
+            new_query.add(key, val)
+
+    me_url = f'{django_url}/api/me/'
+    #await asyncio.sleep(0.1) # prevent too many calls to django
+    async with app['session'].request('GET', me_url, headers={'Authorization': auth}) as resp:
+        resp_json = json.loads(await resp.text())[0]
+        space_left = resp_json['space_total'] - resp_json['space_used']
+
+    # Set a request chunk callback to check whether storage limit is ever exceeded
+    storage_limit_exceeded = False
+    space_left_resp = space_left
+    last_hash = None
+    last_size = defaultdict(lambda: 0)
+    async def _resp_chunk_transform(chunk):
+        nonlocal space_left_resp, storage_limit_exceeded, last_hash
+        lines = chunk.split(b'\n')
+        new_lines = []
+        for line in lines:
+            try:
+                line_json = json.loads(line.decode('utf-8'))
+            except:
+                new_lines.append(line)
+                continue
+
+            if 'Bytes' in line_json:
+                space_left_resp -= line_json['Bytes'] - last_size[line_json['Name']]
+                last_size[line_json['Name']] = line_json['Bytes']
+                if space_left_resp < 0:
+                    storage_limit_exceeded = True
+            elif 'Hash' in line_json:
+                last_hash = line_json['Hash']
+                if storage_limit_exceeded:
+                    line_json['Hash'] = 'PIN FAILED: STORAGE LIMIT EXCEEDED'
+
+            new_lines.append(json.dumps(line_json).encode('utf-8'))
+        return b'\n'.join(new_lines)
+
 
     # NOTE: don't write eof in the handler, since then the response would be over
     # but we still need to add the pins to django before we want to return
-    response, body = await ipfs_proxy_handler(request, ipfs_url, return_body=True,
-                                              write_eof=False)
+    ret = await ipfs_proxy_handler(
+        request, ipfs_url, query=new_query,
+        #req_chunk_transform=_req_chunk_transform,
+        resp_chunk_transform=_resp_chunk_transform, write_eof=False)
 
-    # Response can stream with progress=true, so get the last line which
-    # contains the final hash
-    last_line = body.decode('utf-8').strip().split('\n')[-1]
-    multihash = json.loads(last_line)['Hash']
+    if not storage_limit_exceeded:
+        await _add_pins(
+            [last_hash], 'recursive', ipfs_url, django_url, auth)
 
-    if response.status == 200 and request.query.get('pin', 'true') == 'true':
-        await _add_pins([multihash], 'recursive', ipfs_url, django_url, auth)
+    await ret.write_eof()
+    return ret
 
-    # Now write eof
-    await response.write_eof()
-    return response
 
 
 async def _pins_from_multihash(multihash, ipfs_url, pin_type, first=True):
@@ -470,27 +538,24 @@ if __name__ == "__main__":
     # ----------------------------
     # Commands requiring auth only
     # ----------------------------
-    auth_handler = partial(_auth_handler, **kwargs)
     auth_commands = ['cat', 'get', 'ls', 'refs', 'object/data',
                      'object/diff', 'object/get', 'object/links', 'object/new',
                      'object/patch/add-link', 'object/patch/append-data',
                      'object/patch/rm-link', 'object/patch/set-data',
                      'object/put', 'object/stat', 'version', 'tar/add',
                      'tar/cat']
-    routes.append((auth_commands, auth_handler))
+    routes.append((auth_commands, _auth_handler))
 
     # ----------
     # ipfs files
     # ----------
-    files_rewrite_handler = partial(_files_rewrite_handler, **kwargs)
     files_rewrite_commands = ['files/flush', 'files/ls', 'files/read', 'files/stat']
-    routes.append((files_rewrite_commands, files_rewrite_handler))
-    files_repin_rewrite_handler = partial(_files_repin_rewrite_handler, **kwargs)
+    routes.append((files_rewrite_commands, _files_rewrite_handler))
+    files_repin_rewrite_handler = _files_repin_rewrite_handler
     files_repin_rewrite_commands = ['files/cp', 'files/mkdir', 'files/mv',
                                     'files/write']
     routes.append((files_repin_rewrite_commands, files_repin_rewrite_handler))
-    files_rm_handler = partial(_files_rm_handler, **kwargs)
-    routes.append((['files/rm'], files_rm_handler))
+    routes.append((['files/rm'], _files_rm_handler))
     # ---------
     # ipfs key
     # ---------
@@ -505,9 +570,9 @@ if __name__ == "__main__":
     # --------
     # ipfs pin
     # --------
-    routes.append((['pin/ls'], partial(_pin_ls_handler, **kwargs)))
-    routes.append((['pin/add'], partial(_pin_add_handler, **kwargs)))
-    routes.append((['pin/rm'], partial(_pin_rm_handler, **kwargs)))
+    routes.append((['pin/ls'], _pin_ls_handler))
+    routes.append((['pin/add'], _pin_add_handler))
+    routes.append((['pin/rm'], _pin_rm_handler))
 
 
     # -------------------------------------
@@ -520,7 +585,8 @@ if __name__ == "__main__":
 
     for paths, handler in routes:
         for path in paths:
-            app.router.add_route('POST', f'/api/v0/{path}', handler)
+            wrapped = partial(_auth_and_lock, handler=handler, handler_kwargs=kwargs)
+            app.router.add_route('POST', f'/api/v0/{path}', wrapped)
 
     try:
         web.run_app(app, host='0.0.0.0', ssl_context=ssl_context, port=args.listen_port)
