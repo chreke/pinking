@@ -160,9 +160,11 @@ test "files mkdir /testdir"
 test "files ls /testdir"
 test "files cp /ipfs/$HASH /myfile/myfile"
 test "files ls /testdir"
+test "files rm /testdir" # should fail without "-r" flag
+test "files rm -r /testdir"
 # NOTE: this works, but returns an error message with the full user path for now
-test_stderr_eq "files rm /testdir" "Error: /dGVzdA==/testdir is a directory, use -r to remove directories"
-test_stderr_eq "files rm -r /testdir" ""
+#test_stderr_eq "files rm /testdir" "Error: /dGVzdA==/testdir is a directory, use -r to remove directories"
+#test_stderr_eq "files rm -r /testdir" ""
 
 # Create a 200 Mb file that should trip our space limit
 #dd if=/dev/urandom of=testfile bs=1048576 count=200 > /dev/null 2>&1

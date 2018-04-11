@@ -139,8 +139,10 @@ async def _files_repin_rewrite_handler(request, ipfs_url, django_url):
     procedure is:
     1. Rewrite paths (like in _files_rewrite_handler)
     2. Get the hash of the current MFS user root
-        1. Create the user root if it doesn't exist
+        * Create the user root if it doesn't exist
     3. Proxy the request to IPFS
+        * Make sure to rewrite any errors containing the user root folder,
+          we don't want that to leak out.
     4. Get the new MFS user root hash
     5. Update the django database
         1. If this fails, roll back to previous root hash (e.g. if out of storage)
@@ -162,6 +164,22 @@ async def _files_repin_rewrite_handler(request, ipfs_url, django_url):
     resp_json = await resp.json()
     prev_root_hash = None if resp_json is None else resp_json['Hash']
 
+    async def _resp_chunk_transform(chunk):
+        """
+        Rewrite any errors in the return message with the user root in them, 
+        e.g. "/{user_root}/folder is a directory, use -r to remove directories" 
+        to become "/folder is a directory, use -r to remove directories" 
+        """
+        try:
+            chunk_json = json.loads(chunk.decode('utf-8'))
+            user_root = f'/{username_b64}'
+            msg = chunk_json['Message']
+            if msg.startswith(user_root):
+                chunk_json['Message'] = msg[len(user_root):]
+            return json.dumps(chunk_json).encode('utf-8') + b'\n'
+        except:
+            return chunk
+
     # Proxy the request to ipfs
     try:
         new_query = _rewrite_files_paths(request)
@@ -169,7 +187,8 @@ async def _files_repin_rewrite_handler(request, ipfs_url, django_url):
         error_msg = {'Message': f'Paths must start with a leading slash.', 'Code': 0}
         return web.json_response(error_msg, status=500)
     response = await ipfs_proxy_handler(
-        request, ipfs_url, query=new_query, write_eof=False)
+        request, ipfs_url, query=new_query, write_eof=False,
+        resp_chunk_transform=_resp_chunk_transform)
     if response.status != 200:
         await response.write_eof()
         return response
