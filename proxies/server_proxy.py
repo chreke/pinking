@@ -64,15 +64,18 @@ async def _auth_and_lock(request, handler, handler_kwargs):
     _locks[user] = False
 
 
-def _rewrite_files_paths(request):
+def _rewrite_files_paths(request, query=None):
     """
     Rewrites paths in requests to use the MFS user root
     """
+    query = query if query is not None else request.query
     username, pwd = _get_user_password(request)
     username_b64 = base64.b64encode(username.encode('utf-8')).decode('utf-8')
     new_query = MultiDict()
-    for key, val in request.query.items():
+    for key, val in query.items():
         if key in ['arg', 'arg2'] and not val.startswith('/ipfs/'):
+            if val[0] != '/':
+                raise ValueError()
             new_path = f'/{username_b64}{os.path.normpath(val)}'
             new_query.add(key, new_path)
         else:
@@ -100,7 +103,33 @@ async def _files_rewrite_handler(request, ipfs_url, django_url):
     The handler rewrites all access paths within MFS to use the MFS user root
     instead of the real root
     """
-    new_query = _rewrite_files_paths(request)
+    try:
+        new_query = _rewrite_files_paths(request)
+    except ValueError:
+        error_msg = {'Message': f'Paths must start with a leading slash.', 'Code': 0}
+        return web.json_response(error_msg, status=500)
+
+    return await ipfs_proxy_handler(request, ipfs_url, query=new_query)
+
+
+async def _files_ls_handler(request, ipfs_url, django_url):
+    """
+    A handler for MFS ls. Here we need to handle the special case where
+    `ipfs files ls` is called without an arg. This is implicitly assumed to be '/'
+    by go-ipfs
+    """
+    new_query = None
+    if 'arg' not in request.query:
+        new_query = MultiDict()
+        for key, val in request.query.items():
+            new_query.add(key, val)
+        new_query.add('arg', '/')
+
+    try:
+        new_query = _rewrite_files_paths(request, new_query)
+    except ValueError:
+        error_msg = {'Message': f'Paths must start with a leading slash.', 'Code': 0}
+        return web.json_response(error_msg, status=500)
     return await ipfs_proxy_handler(request, ipfs_url, query=new_query)
 
 
@@ -134,7 +163,11 @@ async def _files_repin_rewrite_handler(request, ipfs_url, django_url):
     prev_root_hash = None if resp_json is None else resp_json['Hash']
 
     # Proxy the request to ipfs
-    new_query = _rewrite_files_paths(request)
+    try:
+        new_query = _rewrite_files_paths(request)
+    except ValueError:
+        error_msg = {'Message': f'Paths must start with a leading slash.', 'Code': 0}
+        return web.json_response(error_msg, status=500)
     response = await ipfs_proxy_handler(
         request, ipfs_url, query=new_query, write_eof=False)
     if response.status != 200:
@@ -549,13 +582,14 @@ if __name__ == "__main__":
     # ----------
     # ipfs files
     # ----------
-    files_rewrite_commands = ['files/flush', 'files/ls', 'files/read', 'files/stat']
+    files_rewrite_commands = ['files/flush', 'files/read', 'files/stat']
     routes.append((files_rewrite_commands, _files_rewrite_handler))
     files_repin_rewrite_handler = _files_repin_rewrite_handler
     files_repin_rewrite_commands = ['files/cp', 'files/mkdir', 'files/mv',
                                     'files/write']
     routes.append((files_repin_rewrite_commands, files_repin_rewrite_handler))
     routes.append((['files/rm'], _files_rm_handler))
+    routes.append((['files/ls'], _files_ls_handler))
     # ---------
     # ipfs key
     # ---------

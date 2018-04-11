@@ -146,13 +146,20 @@ test "pin ls" sort
 test "pin rm $HASH $HASH2"
 test "pin ls" sort
 
+test "files ls test" # should fail, paths must start with slash
 test "files cp /ipfs/$HASH /myfile"
 test "files cp /ipfs/$HASH /myfile" # try it again, should fail
+test "files ls" # try ls with implicit root arg
+test "files ls /" # try ls with explicit root arg
 test "files rm /myfile"
+test "files ls"
 test "files rm /myfile" # try it again, should fail
+test "files ls"
 test "files rm /" # should fail
 test "files mkdir /testdir"
+test "files ls /testdir"
 test "files cp /ipfs/$HASH /myfile/myfile"
+test "files ls /testdir"
 # NOTE: this works, but returns an error message with the full user path for now
 test_stderr_eq "files rm /testdir" "Error: /dGVzdA==/testdir is a directory, use -r to remove directories"
 test_stderr_eq "files rm -r /testdir" ""
