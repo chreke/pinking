@@ -34,7 +34,7 @@ async def _authenticate(request, django_url):
     """
     resp = await app['session'].request(
         'GET', f'{django_url}/api/auth/', headers=request.headers)
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.01)
     if resp.status != 200:
         error_msg = {'Message': await resp.text(), 'Code': 0}
         return web.json_response(error_msg, status=resp.status)
@@ -74,7 +74,7 @@ def _rewrite_files_paths(request, query=None):
     new_query = MultiDict()
     for key, val in query.items():
         if key in ['arg', 'arg2'] and not val.startswith('/ipfs/'):
-            if val[0] != '/':
+            if val[0] not in ['/', '\\']:
                 raise ValueError()
             new_path = f'/{username_b64}{os.path.normpath(val)}'
             new_query.add(key, new_path)
@@ -212,7 +212,7 @@ async def _files_repin_rewrite_handler(request, ipfs_url, django_url):
         # There seems to be a bug in ClientSession where two quick consecutive requests
         # to django here, the socket fails with "[Errno 54] Connection reset by peer"
         # We can fix this by sleeping for a bit, or using a fresh ClientSession
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.01)
         error_response = await _add_pins(
             [new_root_hash], 'mfs', ipfs_url, django_url, auth)
 
@@ -266,7 +266,6 @@ async def _add_handler(request, ipfs_url, django_url):
             new_query.add(key, val)
 
     me_url = f'{django_url}/api/me/'
-    #await asyncio.sleep(0.1) # prevent too many calls to django
     async with app['session'].request('GET', me_url, headers={'Authorization': auth}) as resp:
         resp_json = json.loads(await resp.text())[0]
         space_left = resp_json['space_total'] - resp_json['space_used']
@@ -274,10 +273,10 @@ async def _add_handler(request, ipfs_url, django_url):
     # Set a request chunk callback to check whether storage limit is ever exceeded
     storage_limit_exceeded = False
     space_left_resp = space_left
-    last_hash = None
     last_size = defaultdict(lambda: 0)
+    base_hashes = []
     async def _resp_chunk_transform(chunk):
-        nonlocal space_left_resp, storage_limit_exceeded, last_hash
+        nonlocal space_left_resp, storage_limit_exceeded, base_hashes
         lines = chunk.split(b'\n')
         new_lines = []
         for line in lines:
@@ -293,27 +292,30 @@ async def _add_handler(request, ipfs_url, django_url):
                 if space_left_resp < 0:
                     storage_limit_exceeded = True
             elif 'Hash' in line_json:
-                last_hash = line_json['Hash']
+                num_parts = len([p for p in Path(line_json['Name']).parts
+                                 if p not in ['/', '\\']])
+
+                if len(base_hashes) > 0 and base_hashes[0][1] > num_parts:
+                    base_hashes = []
+
+                base_hashes.append((line_json['Hash'], num_parts))
                 if storage_limit_exceeded:
                     line_json['Hash'] = 'PIN FAILED: STORAGE LIMIT EXCEEDED'
 
             new_lines.append(json.dumps(line_json).encode('utf-8'))
         return b'\n'.join(new_lines)
 
-
     # NOTE: don't write eof in the handler, since then the response would be over
     # but we still need to add the pins to django before we want to return
-    ret = await ipfs_proxy_handler(
+    resp = await ipfs_proxy_handler(
         request, ipfs_url, query=new_query,
-        #req_chunk_transform=_req_chunk_transform,
         resp_chunk_transform=_resp_chunk_transform, write_eof=False)
 
-    if not storage_limit_exceeded:
-        await _add_pins(
-            [last_hash], 'recursive', ipfs_url, django_url, auth)
+    await _add_pins([h for h, _ in base_hashes], 'recursive', ipfs_url,
+                    django_url, auth)
 
-    await ret.write_eof()
-    return ret
+    await resp.write_eof()
+    return resp
 
 
 
@@ -353,23 +355,21 @@ async def _pins_from_multihash(multihash, ipfs_url, pin_type, first=True):
 async def _get_pins_django(django_url, auth, include_mfs=False):
     pins_url = f'{django_url}/api/pins/'
     headers = {'Authorization': auth}
+    await asyncio.sleep(0.01)
     async with app['session'].request('GET', pins_url, headers=headers) as resp:
         if resp.status != 200:
             return resp
         pins = json.loads(await resp.text())
 
         # Massage pins to the ipfs api format
-        out_pins = {}
+        out_pins = defaultdict(list)
         for pin in pins:
             pin_type = PIN_TYPE_CHOICES[pin['pin_type']]
             if pin_type == 'mfs' and not include_mfs:
                 continue
-            multihash = pin['multihash']
-            if pin_type == 'indirect' and multihash in out_pins:
-                continue # direct/recursive/mfs wins over indirect
-            out_pins[multihash] = {'Type': pin_type}
+            out_pins[pin['multihash']].append(pin_type)
 
-        return {'Keys': out_pins}
+        return out_pins
 
 
 async def _add_pins_django(pins, django_url, auth):
@@ -377,6 +377,7 @@ async def _add_pins_django(pins, django_url, auth):
         pin['pin_type'] = PIN_TYPE_CHOICES.index(pin['pin_type'])
     pins_url = f'{django_url}/api/pins/'
     headers = {'Authorization': auth}
+    await asyncio.sleep(0.01)
     return await app['session'].request('POST', pins_url, headers=headers, json=pins)
 
 
@@ -388,6 +389,7 @@ async def _delete_pins_django(pins, django_url, auth):
 
     pins_url = f'{django_url}/api/delete-pins/'
     headers = {'Authorization': auth}
+    await asyncio.sleep(0.01)
     return await app['session'].request('POST', pins_url, headers=headers, json=pins)
 
 
@@ -399,7 +401,19 @@ async def _pin_ls_handler(request, ipfs_url, django_url):
     ret = await _get_pins_django(django_url, auth)
     if not isinstance(ret, dict):
         return web.Response(status=ret.status, text=await ret.text())
-    return web.json_response(ret)
+
+    ipfs_format_pins = {'Keys': {}}
+    for multihash, pin_types in ret.items():
+        winning_pin_type = None
+        if 'recursive' in pin_types:
+            winning_pin_type = 'recursive'
+        elif 'indirect' in pin_types:
+            winning_pin_type = 'indirect'
+        elif 'direct' in pin_types:
+            winning_pin_type = 'direct'
+
+        ipfs_format_pins['Keys'][multihash] = {'Type': winning_pin_type}
+    return web.json_response(ipfs_format_pins)
 
 
 async def _add_pins(multihash_args, pin_type, ipfs_url, django_url, auth):
@@ -412,9 +426,8 @@ async def _add_pins(multihash_args, pin_type, ipfs_url, django_url, auth):
     # If any one of the pins fails, need to return error, and not pin any of
     # the other hashes
     for multihash in multihash_args:
-        django_pin_type = (django_pins['Keys'][multihash]['Type']
-                           if multihash in django_pins['Keys'] else None)
-        if pin_type == 'direct' and django_pin_type == 'recursive':
+        django_pin_types = django_pins.get(multihash, [])
+        if pin_type == 'direct' and 'recursive' in django_pin_types:
             error_msg = {'Message': f'pin: {multihash} already pinned recursively',
                          'Code': 0}
             return web.json_response(error_msg, status=500)
@@ -422,9 +435,8 @@ async def _add_pins(multihash_args, pin_type, ipfs_url, django_url, auth):
     add_pins = []
     delete_pins = []
     for multihash in multihash_args:
-        django_pin_type = (django_pins['Keys'][multihash]['Type']
-                           if multihash in django_pins['Keys'] else None)
-        if pin_type == django_pin_type:
+        django_pin_types = django_pins.get(multihash, [])
+        if pin_type in django_pin_types:
             # Do nothing, just return the multihash
             pass
         else:
@@ -432,7 +444,7 @@ async def _add_pins(multihash_args, pin_type, ipfs_url, django_url, auth):
             if not isinstance(ret, list):
                 return web.Response(status=ret.status, text=await ret.text())
             pins = ret
-            if pin_type == 'recursive' and django_pin_type == 'direct':
+            if pin_type == 'recursive' and 'direct' in django_pin_types:
                 # If we're replacing a direct with recursive, delete the direct one
                 delete_pins.append({'multihash': multihash, 'pin_type': 'direct'})
             add_pins += pins
@@ -480,16 +492,17 @@ async def _rm_pins(multihash_args, ipfs_url, django_url, auth, include_mfs=False
     
     delete_pins = []
     for multihash in multihash_args:
-        if multihash not in django_pins['Keys']:
+        if multihash not in django_pins:
             return web.json_response({'Message': 'not pinned', 'Code': 0}, status=500)
-        pin_type_django = django_pins['Keys'][multihash]['Type']
-        if pin_type_django in ['recursive', 'mfs']:
-            ret = await _pins_from_multihash(multihash, ipfs_url, pin_type_django)
+        pin_types_django = django_pins[multihash]
+        recursive_types = list(set(pin_types_django) & set(['recursive', 'mfs']))
+        if len(recursive_types) > 0:
+            ret = await _pins_from_multihash(multihash, ipfs_url, recursive_types[0])
             if not isinstance(ret, list):
                 return web.Response(status=ret.status, text=await ret.text())
             delete_pins += ret
-        elif pin_type_django == 'direct':
-            delete_pins.append({'multihash': multihash, 'pin_type': pin_type_django})
+        elif 'direct' in pin_types_django:
+            delete_pins.append({'multihash': multihash, 'pin_type': 'direct'})
         else:
             # TODO: The real message from IPFS is:
             # "{h1} is pinned indirectly under {h2}"

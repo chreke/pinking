@@ -49,7 +49,7 @@ python proxies/local_proxy.py --listen_port $PROXY_PORT \
 python proxies/server_proxy.py --listen_port $SERVER_PROXY_PORT \
                                --ipfs_port $IPFS2_PORT \
                                --django_port $DJANGO_PORT & # > /dev/null 2>&1 &
-sleep 3
+sleep 5
 
 function kill_all {
   sleep 1
@@ -80,6 +80,7 @@ function test {
   fi
   if [ "$ERR1" != "$ERR2" ]; then
     echo "STDERR: ipfs $1 differed between node and proxy"
+    cmp -bl <(echo -n $ERR1) <(echo -n $ERR2)
     printf "%s\n" "IPFS: $ERR1 != PROXY: $ERR2"
     kill_all
     exit 1
@@ -119,36 +120,45 @@ ipfs --api $IPFS2_API pin ls | grep recursive | cut -d " " -f 1 | xargs -I {} ip
 test "pin ls" sort
 
 #Initialize a repository
-echo "hello world" > testfile
-test "add --pin=false testfile"
-HASH=$(echo $TEST_STDOUT | cut -d " " -f 2)
-
-test "pin ls" sort # testfile should not be pinned
-test "add testfile"
-test "pin ls" sort # testfile should be pinned recursively
-
-test "pin rm $HASH"
-test "pin rm $HASH" # remove it again, to see if error message is the same
-test "pin ls" sort
-
-test "pin add $HASH"
-test "pin ls" sort
-
-test "pin add --recursive=false $HASH" # should fail
-test "pin rm $HASH" # delete the recursive one
-test "pin add --recursive=false $HASH" # should work now
-
+echo "hello world" > testfile1
 echo "hello world2" > testfile2
-test "add testfile2"
+test "add --pin=false testfile1"
+HASH1=$(echo $TEST_STDOUT | cut -d " " -f 2)
+test "add --pin=false testfile2"
 HASH2=$(echo $TEST_STDOUT | cut -d " " -f 2)
 
+test "pin ls" sort # testfile1 should not be pinned
+test "add testfile1"
+test "pin ls" sort # testfile should be pinned recursively
+
+test "pin rm $HASH1"
+test "pin rm $HASH1" # remove it again, to see if error message is the same
+test "pin rm $HASH1 $HASH2"
 test "pin ls" sort
-test "pin rm $HASH $HASH2"
+
+test "pin add $HASH1"
+test "pin ls" sort
+test "pin rm $HASH1"
+
+test "pin add $HASH1 $HASH2" # test adding multiple hashes
+test "pin ls" sort
+
+test "pin add --recursive=false $HASH1" # should fail
+test "pin rm $HASH1" # delete the recursive one
+test "pin add --recursive=false $HASH1" # should work now
+
+test "pin ls" sort
+test "add -w testfile1 testfile2" # test multiple files wrapped in dir
+#test "add testfile1 testfile2" # test multiple files without wrapping
+
+test "pin ls" sort
+test "pin rm $HASH1 $HASH2"
 test "pin ls" sort
 
 test "files ls test" # should fail, paths must start with slash
-test "files cp /ipfs/$HASH /myfile"
-test "files cp /ipfs/$HASH /myfile" # try it again, should fail
+test "files cp /ipfs/$HASH1 /myfile"
+test "files cp /ipfs/$HASH2 /myfile2"
+test "files cp /ipfs/$HASH1 /myfile" # try it again, should fail
 test "files ls" # try ls with implicit root arg
 test "files ls /" # try ls with explicit root arg
 test "files rm /myfile"
@@ -158,16 +168,12 @@ test "files ls"
 test "files rm /" # should fail
 test "files mkdir /testdir"
 test "files ls /testdir"
-test "files cp /ipfs/$HASH /myfile/myfile"
+test "files cp /ipfs/$HASH1 /myfile/myfile"
 test "files ls /testdir"
 test "files rm /testdir" # should fail without "-r" flag
 test "files rm -r /testdir"
-# NOTE: this works, but returns an error message with the full user path for now
-#test_stderr_eq "files rm /testdir" "Error: /dGVzdA==/testdir is a directory, use -r to remove directories"
-#test_stderr_eq "files rm -r /testdir" ""
 
 # Create a 200 Mb file that should trip our space limit
-#dd if=/dev/urandom of=testfile bs=1048576 count=200 > /dev/null 2>&1
 dd if=/dev/urandom of=testfile bs=1048576 count=200
 test_stdout_eq "add testfile" "added PIN FAILED: STORAGE LIMIT EXCEEDED testfile" ""
 
