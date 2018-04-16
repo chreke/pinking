@@ -75,13 +75,14 @@ function test {
   if [ "$OUT1" != "$OUT2" ]; then
     echo "STDOUT: ipfs $1 differed between node and proxy"
     printf "%s\n" "IPFS: $OUT1 != PROXY: $OUT2"
+    cmp -bl <(echo -n $OUT1) <(echo -n $OUT2)
     kill_all
     exit 1
   fi
   if [ "$ERR1" != "$ERR2" ]; then
     echo "STDERR: ipfs $1 differed between node and proxy"
-    cmp -bl <(echo -n $ERR1) <(echo -n $ERR2)
     printf "%s\n" "IPFS: $ERR1 != PROXY: $ERR2"
+    cmp -bl <(echo -n $ERR1) <(echo -n $ERR2)
     kill_all
     exit 1
   fi
@@ -122,13 +123,13 @@ test "pin ls" sort
 #Initialize a repository
 echo "hello world" > testfile1
 echo "hello world2" > testfile2
-test "add --pin=false testfile1"
+test "add -q --pin=false testfile1"
 HASH1=$(echo $TEST_STDOUT | cut -d " " -f 2)
-test "add --pin=false testfile2"
+test "add -q --pin=false testfile2"
 HASH2=$(echo $TEST_STDOUT | cut -d " " -f 2)
 
 test "pin ls" sort # testfile1 should not be pinned
-test "add testfile1"
+test "add -q testfile1"
 test "pin ls" sort # testfile should be pinned recursively
 
 test "pin rm $HASH1"
@@ -176,7 +177,7 @@ test "files rm -r /testdir"
 
 # Create a 200 Mb file that should trip our space limit
 dd if=/dev/urandom of=testfile bs=1048576 count=200
-test_stdout_eq "add testfile" "added PIN FAILED: STORAGE LIMIT EXCEEDED testfile" ""
+test_stdout_eq "add testfile" "added PIN FAILED: STORAGE LIMIT EXCEEDED testfile"
 
 echo "All tests passed"
 
