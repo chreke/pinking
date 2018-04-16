@@ -36,7 +36,7 @@ async def _authenticate(request, django_url):
         'GET', f'{django_url}/api/auth/', headers=request.headers)
     await asyncio.sleep(0.01)
     if resp.status != 200:
-        error_msg = {'Message': await resp.text(), 'Code': 0}
+        error_msg = {'Message': await resp.text(), 'Code': 0, 'Type': 'error'}
         return web.json_response(error_msg, status=resp.status)
     return None
 
@@ -49,7 +49,8 @@ async def _auth_and_lock(request, handler, handler_kwargs):
 
     user, _ = _get_user_password(request)
     if _locks.get(user) == True:
-        error_msg = {'Message': f'You can only do one request at a time', 'Code': 0}
+        error_msg = {'Message': f'multiple simultaneous requests is not allowed',
+                     'Code': 0, 'Type': 'error'}
         return web.json_response(error_msg, status=429)
 
     try:
@@ -90,7 +91,7 @@ async def _files_rm_handler(request, ipfs_url, django_url):
     """
     rm_paths = request.query.getall('arg', None)
     if '/' in rm_paths:
-        error_msg = {'Message': f'cannot delete root', 'Code': 0}
+        error_msg = {'Message': f'cannot delete root', 'Code': 0, 'Type': 'error'}
         return web.json_response(error_msg, status=500)
 
     response = await _files_repin_rewrite_handler(request, ipfs_url, django_url)
@@ -106,7 +107,8 @@ async def _files_rewrite_handler(request, ipfs_url, django_url):
     try:
         new_query = _rewrite_files_paths(request)
     except ValueError:
-        error_msg = {'Message': f'Paths must start with a leading slash.', 'Code': 0}
+        error_msg = {'Message': f'paths must start with a leading slash',
+                     'Code': 0, 'Type': 'error'}
         return web.json_response(error_msg, status=500)
 
     return await ipfs_proxy_handler(request, ipfs_url, query=new_query)
@@ -128,7 +130,8 @@ async def _files_ls_handler(request, ipfs_url, django_url):
     try:
         new_query = _rewrite_files_paths(request, new_query)
     except ValueError:
-        error_msg = {'Message': f'Paths must start with a leading slash.', 'Code': 0}
+        error_msg = {'Message': f'paths must start with a leading slash',
+                     'Code': 0, 'Type': 'error'}
         return web.json_response(error_msg, status=500)
     return await ipfs_proxy_handler(request, ipfs_url, query=new_query)
 
@@ -184,7 +187,8 @@ async def _files_repin_rewrite_handler(request, ipfs_url, django_url):
     try:
         new_query = _rewrite_files_paths(request)
     except ValueError:
-        error_msg = {'Message': f'Paths must start with a leading slash.', 'Code': 0}
+        error_msg = {'Message': f'paths must start with a leading slash',
+                     'Code': 0, 'Type': 'error'}
         return web.json_response(error_msg, status=500)
     response = await ipfs_proxy_handler(
         request, ipfs_url, query=new_query, write_eof=False,
@@ -246,8 +250,8 @@ async def _add_handler(request, ipfs_url, django_url):
     forbidden_options = ['raw-leaves', 'nocopy', 'fscache']
     for opt in forbidden_options:
         if request.query.get(opt, 'false') != 'false':
-            error_msg = {'Message': f'"--{opt} is an expermental option not supported by pinking"',
-                         'Code': 0}
+            error_msg = {'Message': f'"--{opt} is an experimental option not supported by pinking"',
+                         'Code': 0, 'Type': 'error'}
             return web.json_response(error_msg, status=500)
 
     do_pin = request.query.get('pin', 'true') == 'true'
@@ -451,7 +455,7 @@ async def _add_pins(multihash_args, pin_type, ipfs_url, django_url, auth):
         django_pin_types = django_pins.get(multihash, [])
         if pin_type == 'direct' and 'recursive' in django_pin_types:
             error_msg = {'Message': f'pin: {multihash} already pinned recursively',
-                         'Code': 0}
+                         'Code': 0, 'Type': 'error'}
             return web.json_response(error_msg, status=500)
 
     add_pins = []
@@ -515,7 +519,8 @@ async def _rm_pins(multihash_args, ipfs_url, django_url, auth, include_mfs=False
     delete_pins = []
     for multihash in multihash_args:
         if multihash not in django_pins:
-            return web.json_response({'Message': 'not pinned', 'Code': 0}, status=500)
+            msg = {'Message': 'not pinned', 'Code': 0, 'Type': 'error'}
+            return web.json_response(msg, status=500)
         pin_types_django = django_pins[multihash]
         recursive_types = list(set(pin_types_django) & set(['recursive', 'mfs']))
         if len(recursive_types) > 0:
@@ -532,7 +537,8 @@ async def _rm_pins(multihash_args, ipfs_url, django_url, auth, include_mfs=False
             # though, so for now:
             msg = {
                 'Message': f'{multihash} is pinned indirectly under another pin',
-                'Code': 0
+                'Code': 0,
+                'Type': 'error'
             }
             return web.json_response(msg, status=500)
     
