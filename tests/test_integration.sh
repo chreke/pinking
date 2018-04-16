@@ -148,8 +148,9 @@ test "pin rm $HASH1" # delete the recursive one
 test "pin add --recursive=false $HASH1" # should work now
 
 test "pin ls" sort
-test "add -w testfile1 testfile2" # test multiple files wrapped in dir
-#test "add testfile1 testfile2" # test multiple files without wrapping
+test "add -q testfile1 testfile2" # test multiple files without wrapping
+test "pin ls" sort
+test "add -q -w testfile1 testfile2" # test multiple files wrapped in dir
 
 test "pin ls" sort
 test "pin rm $HASH1 $HASH2"

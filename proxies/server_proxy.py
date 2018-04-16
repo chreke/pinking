@@ -295,10 +295,10 @@ async def _add_handler(request, ipfs_url, django_url):
                 num_parts = len([p for p in Path(line_json['Name']).parts
                                  if p not in ['/', '\\']])
 
-                if len(base_hashes) > 0 and base_hashes[0][1] > num_parts:
+                if len(base_hashes) > 0 and base_hashes[0][2] > num_parts:
                     base_hashes = []
 
-                base_hashes.append((line_json['Hash'], num_parts))
+                base_hashes.append((line_json['Hash'], line_json['Name'], num_parts))
                 if storage_limit_exceeded:
                     line_json['Hash'] = 'PIN FAILED: STORAGE LIMIT EXCEEDED'
 
@@ -307,15 +307,37 @@ async def _add_handler(request, ipfs_url, django_url):
 
     # NOTE: don't write eof in the handler, since then the response would be over
     # but we still need to add the pins to django before we want to return
-    resp = await ipfs_proxy_handler(
+    proxy_resp = await ipfs_proxy_handler(
         request, ipfs_url, query=new_query,
         resp_chunk_transform=_resp_chunk_transform, write_eof=False)
 
-    await _add_pins([h for h, _ in base_hashes], 'recursive', ipfs_url,
+    if len(base_hashes) > 1:
+        # Special case, need to wrap the files in a directory
+        new_obj_url = f'{ipfs_url}/api/v0/object/new'
+        add_link_url = f'{ipfs_url}/api/v0/object/patch/add-link'
+        params = {'arg': 'unixfs-dir'}
+        async with app['session'].request('GET', new_obj_url, params=params) as resp:
+            if resp.status != 200:
+                return web.Response(status=resp.status, text=await resp.text())
+
+            resp_json = json.loads(await resp.text())
+            dir_hash = resp_json['Hash']
+            for multihash, name, _ in base_hashes:
+                link_params = MultiDict()
+                link_params.add('arg', dir_hash)
+                link_params.add('arg', name)
+                link_params.add('arg', multihash)
+                resp = await app['session'].request('GET', add_link_url, params=link_params)
+                resp_json = json.loads(await resp.text())
+                dir_hash = resp_json['Hash']
+
+            base_hashes = [(dir_hash, None, None)]
+
+    await _add_pins([h for h, _, _ in base_hashes], 'recursive', ipfs_url,
                     django_url, auth)
 
-    await resp.write_eof()
-    return resp
+    await proxy_resp.write_eof()
+    return proxy_resp
 
 
 
