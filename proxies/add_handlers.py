@@ -37,7 +37,8 @@ async def add_handler(request, ipfs_url, django_url):
             new_query.add(key, val)
 
     me_url = f'{django_url}/api/me/'
-    async with app['session'].request('GET', me_url, headers={'Authorization': auth}) as resp:
+    headers = {'Authorization': auth}
+    async with app['session'].request('GET', me_url, headers=headers) as resp:
         resp_json = json.loads(await resp.text())[0]
         space_left = resp_json['space_total'] - resp_json['space_used']
 

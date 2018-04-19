@@ -20,6 +20,9 @@ from mfs_handlers import files_rewrite_handler, files_repin_rewrite_handler
 import add_handlers
 from add_handlers import add_handler
 
+import ipns_handlers
+from ipns_handlers import rewrite_key_handler
+
 async def _on_startup(app):
     app['session'] = aiohttp.ClientSession()
 
@@ -79,7 +82,9 @@ if __name__ == "__main__":
     app = web.Application()
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
-    for module in [pin_handlers, mfs_handlers, auth_handlers, add_handlers]:
+    handlers = [pin_handlers, mfs_handlers, auth_handlers, add_handlers,
+                ipns_handlers]
+    for module in handlers:
         module.app = app
 
     routes = []
@@ -96,7 +101,7 @@ if __name__ == "__main__":
                      'object/patch/add-link', 'object/patch/append-data',
                      'object/patch/rm-link', 'object/patch/set-data',
                      'object/put', 'object/stat', 'version', 'tar/add',
-                     'tar/cat']
+                     'tar/cat', 'name/resolve']
     routes.append((auth_commands, auth_handler))
 
     # ----------
@@ -110,17 +115,6 @@ if __name__ == "__main__":
     routes.append((['files/rm'], files_rm_handler))
     routes.append((['files/ls'], files_ls_handler))
 
-    # ---------
-    # ipfs key
-    # ---------
-    '''
-    key_handler = partial(_key_handler, ipfs_url=ipfs_url)
-    routes.append(['key/gen'], _key_gen_handler)
-    routes.append(['key/list'], _key_list_handler)
-    routes.append(['key/rename'], _key_rename_handler)
-    routes.append(['key/rm'], _key_rm_handler)
-    '''
-
     # --------
     # ipfs pin
     # --------
@@ -128,6 +122,15 @@ if __name__ == "__main__":
     routes.append((['pin/add'], pin_add_handler))
     routes.append((['pin/rm'], pin_rm_handler))
 
+
+    # -------------------------------
+    # ipfs key and ipfs name publish
+    # -------------------------------
+    routes.append((['key/list'], partial(rewrite_key_handler)))
+    routes.append((['key/gen'], partial(rewrite_key_handler, key_argname='arg')))
+    routes.append((['key/rename'], partial(rewrite_key_handler, key_argname='arg')))
+    routes.append((['key/rm'], partial(rewrite_key_handler, key_argname='arg')))
+    routes.append((['name/publish'], partial(rewrite_key_handler, key_argname='key')))
 
     for paths, handler in routes:
         for path in paths:

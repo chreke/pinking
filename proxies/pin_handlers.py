@@ -9,8 +9,6 @@ from aiohttp import web
 # TODO: fix this, already defined in pin.models.Pin but not sure how to import
 PIN_TYPE_CHOICES = ['direct', 'recursive', 'indirect', 'mfs']
 
-app = None
-
 async def _pins_from_multihash(multihash, ipfs_url, pin_type, first=True):
     """
     Recursively applies `ipfs object links` to get all downstream hashes and

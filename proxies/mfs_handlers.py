@@ -15,7 +15,7 @@ def _rewrite_files_paths(request, query=None):
     Rewrites paths in requests to use the MFS user root
     """
     query = query if query is not None else request.query
-    username, pwd = get_user_password(request)
+    username, _ = get_user_password(request)
     username_b64 = base64.b64encode(username.encode('utf-8')).decode('utf-8')
     new_query = MultiDict()
     for key, val in query.items():
