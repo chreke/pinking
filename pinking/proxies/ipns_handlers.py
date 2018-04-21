@@ -8,8 +8,8 @@ import logging
 from aiohttp import web
 from multidict import MultiDict
 from collections import defaultdict
-from proxy import ipfs_proxy_handler
-from auth_handlers import get_user_password
+from .proxy import ipfs_proxy_handler
+from .auth_handlers import get_user_password
 
 
 async def rewrite_key_handler(request, ipfs_url, django_url, key_argname=None):

@@ -3,7 +3,7 @@ import asyncio
 import logging
 from aiohttp import web
 from collections import defaultdict
-from proxy import ipfs_proxy_handler
+from .proxy import ipfs_proxy_handler
 
 
 def get_user_password(request):

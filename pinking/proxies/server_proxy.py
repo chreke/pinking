@@ -6,22 +6,23 @@ from functools import partial
 from pathlib import Path
 from aiohttp import web
 
-import auth_handlers
-from auth_handlers import auth_and_lock, auth_handler
+from pinking.proxies import auth_handlers
+from .auth_handlers import auth_and_lock, auth_handler
 
-import pin_handlers
-from pin_handlers import pin_add_handler, pin_rm_handler, pin_ls_handler
-from pin_handlers import add_pins, rm_pins
+from pinking.proxies import pin_handlers
+from .pin_handlers import pin_add_handler, pin_rm_handler, pin_ls_handler
+from .pin_handlers import add_pins, rm_pins
 
-import mfs_handlers
-from mfs_handlers import files_rm_handler, files_ls_handler
-from mfs_handlers import files_rewrite_handler, files_repin_rewrite_handler
+from pinking.proxies import mfs_handlers
+from .mfs_handlers import files_rm_handler, files_ls_handler
+from .mfs_handlers import files_rewrite_handler, files_repin_rewrite_handler
 
-import add_handlers
-from add_handlers import add_handler
+from pinking.proxies import add_handlers
+from .add_handlers import add_handler
 
-import ipns_handlers
-from ipns_handlers import rewrite_key_handler
+from pinking.proxies import ipns_handlers
+from pinking.proxies import ipns_handlers
+from .ipns_handlers import rewrite_key_handler
 
 async def _on_startup(app):
     app['session'] = aiohttp.ClientSession()
@@ -31,24 +32,7 @@ async def _on_cleanup(app):
     await app['session'].close()
 
 
-if __name__ == "__main__":
-    lvl_map = {
-        'DEBUG': logging.DEBUG, 'INFO': logging.INFO, 'WARNING': logging.WARNING,
-        'ERROR': logging.ERROR, 'CRITICAL': logging.CRITICAL
-    }
-    parser = argparse.ArgumentParser(description='Run the pinking server proxy')
-    parser.add_argument("--listen_port", help="set the listening port",
-                        type=int, default=5002)
-    parser.add_argument("--ipfs_port", help="set the ipfs port",
-                        type=int, default=5001)
-    parser.add_argument("--django_port", help="set the django port",
-                        type=int, default=8000)
-    parser.add_argument("--logfile", help="the optional output log file", type=str)
-    parser.add_argument("--loglvl", help="the log level",
-                        type=str, choices=list(lvl_map.keys()), default='INFO')
-    parser.add_argument("--ssl_cert_path", help="use ssl certs at path", type=str)
-    args = parser.parse_args()
-
+def main(args):
     # Set up logging
     logging.basicConfig(format='server proxy: %(asctime)s %(message)s',
                         datefmt='%m/%d/%Y %I:%M:%S %p',

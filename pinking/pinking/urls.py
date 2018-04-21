@@ -17,7 +17,7 @@ from django.contrib import admin
 from django.views.generic import RedirectView
 from django.urls import path, include, reverse_lazy
 from rest_framework import routers
-from pin import views
+from pinking.pin import views
 
 router = routers.DefaultRouter()
 router.register('me', views.MeView, base_name='me')

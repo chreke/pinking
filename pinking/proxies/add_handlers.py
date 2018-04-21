@@ -4,8 +4,8 @@ from aiohttp import web
 from pathlib import Path
 from multidict import MultiDict
 from collections import defaultdict
-from proxy import ipfs_proxy_handler
-from pin_handlers import add_pins
+from .proxy import ipfs_proxy_handler
+from .pin_handlers import add_pins
 
 
 async def add_handler(request, ipfs_url, django_url):

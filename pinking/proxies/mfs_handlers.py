@@ -5,9 +5,9 @@ import asyncio
 import logging
 from multidict import MultiDict
 from aiohttp import web
-from proxy import ipfs_proxy_handler
-from auth_handlers import get_user_password
-from pin_handlers import add_pins, rm_pins
+from .proxy import ipfs_proxy_handler
+from .auth_handlers import get_user_password
+from .pin_handlers import add_pins, rm_pins
 
 
 def _rewrite_files_paths(request, query=None):
