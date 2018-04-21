@@ -3,7 +3,6 @@ import argparse
 import logging
 import getpass
 from pathlib import Path
-from psutil import Process, net_connections
 from aiohttp import web
 from aiohttp.helpers import BasicAuth
 from functools import partial
